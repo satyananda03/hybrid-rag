@@ -4,9 +4,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 NOVA_MODELS: frozenset[str] = frozenset({"mjai.nova-2-lite-v1:0"})
 
-#: Every model role is configured on its own, with no shared default: its model,
-#: ``*_BINDING_HOST``, ``*_BINDING_API_KEY`` and optional ``*_TIMEOUT``.
-#: role -> (settings field prefix, env var prefix); see :meth:`RagSettings.require`.
 MODEL_ROLES: dict[str, tuple[str, str]] = {
     "extract": ("extract_llm", "EXTRACT_LLM"),
     "contextualize": ("contextualize_llm", "CONTEXTUALIZE_LLM"),
@@ -14,7 +11,6 @@ MODEL_ROLES: dict[str, tuple[str, str]] = {
     "vlm": ("vlm", "VLM"),
     "embedding": ("embedding", "EMBEDDING"),
 }
-
 
 class RagSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)  # `KEY=` means unset
@@ -138,10 +134,6 @@ class RagSettings(BaseSettings):
         return max(4, self.postgres_max_connections // 5)
 
     def require(self, *roles: str) -> None:
-        """Fail fast when a model role the caller needs is not fully configured.
-
-        ``roles`` are keys of :data:`MODEL_ROLES`; each needs its model, host and key.
-        """
         missing = []
         for role in roles:
             field, env = MODEL_ROLES[role]
@@ -150,6 +142,5 @@ class RagSettings(BaseSettings):
                     missing.append(f"{env}_{suffix.upper()}")
         if missing:
             raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
-
 
 settings = RagSettings()
