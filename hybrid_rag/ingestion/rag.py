@@ -139,7 +139,7 @@ class IngestionRAG(
     )
     """Maximum number of concurrent embedding function calls."""
 
-    default_embedding_timeout: int = field(
+    default_embedding_timeout: float = field(
         default=settings.embedding_timeout
     )
 
@@ -162,7 +162,7 @@ class IngestionRAG(
 
     llm_model_max_async: int = field(
         default=int(
-            settings.llm_max_async
+            settings.extract_llm_max_async
         )
     )
     """Maximum number of concurrent LLM calls."""
@@ -340,19 +340,16 @@ class IngestionRAG(
             namespace=NameSpace.VECTOR_STORE_ENTITIES,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"entity_name", "source_id", "content", "file_path"},
         )
         self.relationships_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_RELATIONSHIPS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"src_id", "tgt_id", "source_id", "content", "file_path"},
         )
         self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_CHUNKS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"full_doc_id", "content", "file_path"},
         )
 
         # Initialize document status storage

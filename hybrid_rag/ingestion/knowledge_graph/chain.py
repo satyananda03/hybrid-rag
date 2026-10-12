@@ -48,11 +48,11 @@ KG_PROMPTS_PATH = Path(__file__).resolve().parent / "knowledge_graph.yaml"
 def _extract_llm(output_model: type = EntityExtractionOutput) -> Runnable:
     """The extraction model bound to one output schema, built on first use."""
     return providers.get_llm(
-        model_id=settings.resolved_extract_model,
+        model_id=settings.extract_llm_model,
         max_tokens=None,  # a capped structured output is truncated JSON: 40% of extractions exceed 900 tokens
         temperature=0.0,
-        base_url=settings.resolved_extract_host,
-        api_key=settings.resolved_extract_api_key,
+        base_url=settings.extract_llm_binding_host,
+        api_key=settings.extract_llm_binding_api_key,
         timeout=settings.extract_llm_timeout,
     ).with_structured_output(output_model)
 
@@ -109,7 +109,7 @@ def _build_chains(ontology: str | None) -> KGChains:
     # menerjemahkan cache_control ke cachePoint. Teks prompt tidak berubah.
     system = (
         [{"type": "text", "text": extraction["system_prompt"], "cache_control": {"type": "ephemeral"}}]
-        if settings.resolved_extract_model in NOVA_MODELS
+        if settings.extract_llm_model in NOVA_MODELS
         else extraction["system_prompt"]
     )
 
@@ -137,7 +137,7 @@ def _build_chains(ontology: str | None) -> KGChains:
             _extract_llm(output_model),
             cache_type="extract",
             output_model=output_model,
-            model_id=settings.resolved_extract_model,
+            model_id=settings.extract_llm_model,
         ),
         gleaning_prompt=gleaning_prompt,
         gleaning_chain=cached_chain(
@@ -145,7 +145,7 @@ def _build_chains(ontology: str | None) -> KGChains:
             _extract_llm(output_model),
             cache_type="extract",
             output_model=output_model,
-            model_id=settings.resolved_extract_model,
+            model_id=settings.extract_llm_model,
         ),
         # Injected into the extraction user prompt when the chunk carries a heading
         # breadcrumb; str.format()ed by extract_entities, empty string when it does not.
@@ -162,10 +162,10 @@ def _summary_chain() -> Runnable:
     string the graph stores.
     """
     summary_llm = providers.get_llm(
-        model_id=settings.resolved_extract_model,
+        model_id=settings.extract_llm_model,
         max_tokens=None,
-        base_url=settings.resolved_extract_host,
-        api_key=settings.resolved_extract_api_key,
+        base_url=settings.extract_llm_binding_host,
+        api_key=settings.extract_llm_binding_api_key,
         timeout=settings.extract_llm_timeout,
     )
     summary_prompt = ChatPromptTemplate.from_messages(
@@ -175,7 +175,7 @@ def _summary_chain() -> Runnable:
         summary_prompt,
         summary_llm | StrOutputParser(),
         cache_type="summary",
-        model_id=settings.resolved_extract_model,
+        model_id=settings.extract_llm_model,
     )
 
 # Summaries fan out from merge_nodes_and_edges, whose own semaphore is

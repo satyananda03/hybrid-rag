@@ -27,10 +27,10 @@ KEYWORDS_PROMPT_PATH = Path(__file__).resolve().parent / "keywords.yaml"
 def keywords_chain() -> Runnable:
     """The keyword chain; ``extract_keywords_only`` keys its cache entries by ``CACHE_MODE``."""
     llm = providers.get_llm(
-        model_id=settings.resolved_keyword_model,
+        model_id=settings.keyword_llm_model,
         max_tokens=None,
-        base_url=settings.resolved_keyword_host,
-        api_key=settings.resolved_keyword_api_key,
+        base_url=settings.keyword_llm_binding_host,
+        api_key=settings.keyword_llm_binding_api_key,
         timeout=settings.keyword_llm_timeout,
     ).with_structured_output(KeywordsOutput)
     return cached_chain(
@@ -38,5 +38,5 @@ def keywords_chain() -> Runnable:
         llm,
         cache_type="keywords",
         output_model=KeywordsOutput,
-        model_id=settings.resolved_keyword_model,
+        model_id=settings.keyword_llm_model,
     )

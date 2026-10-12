@@ -82,7 +82,7 @@ def promote_first_row_to_header(html: str) -> str:
 # ============================================================
 # 0b. KONVERSI HTML TABEL -> MARKDOWN
 # ============================================================
-def html_table_to_markdown(html: str, strategy: str = "fill_dito") -> str | None:
+def html_table_to_markdown(html: str) -> str | None:
     """Konversi HTML tabel dari unstructured.metadata.text_as_html menjadi Markdown."""
     if not html:
         return None

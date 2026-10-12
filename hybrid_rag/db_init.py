@@ -14,7 +14,6 @@ Idempotent. Needs a database role allowed to ``CREATE SCHEMA`` and
 
 import asyncio
 import logging
-
 from hybrid_rag.config import settings
 from hybrid_rag.core.base import collection_suffix
 from hybrid_rag.core.namespace import NameSpace
@@ -45,13 +44,11 @@ async def init_schema() -> None:
             logger.info(f"db-init: {table} ready")
     finally:
         await db.pool.close()
-
     try:
         await create_schema()
     finally:
         await close_neo4j_driver()
     logger.info("db-init: done")
-
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")

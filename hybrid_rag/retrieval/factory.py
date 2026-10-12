@@ -21,14 +21,21 @@ async def build_rag(workspace: str) -> RetrievalRAG:
     The caller owns the returned instance and is responsible for
     ``await rag.finalize_storages()`` on shutdown.
     """
-    settings.require()
+    settings.require("keyword", "embedding")
     rag = RetrievalRAG(
         workspace=workspace,
         enable_llm_cache=settings.enable_llm_cache,
         embedding_func=build_embedding_func(),
         # None disables reranking entirely.
         rerank_model_func=(
-            providers.rerank_func() if settings.rerank_model and settings.rerank_binding_host else None
+            providers.get_reranker(
+                model_id=settings.rerank_model,
+                base_url=settings.rerank_binding_host,
+                api_key=settings.rerank_binding_api_key,
+                timeout=settings.rerank_timeout,
+            )
+            if settings.rerank_model and settings.rerank_binding_host
+            else None
         ),
     )
     await rag.initialize_storages()

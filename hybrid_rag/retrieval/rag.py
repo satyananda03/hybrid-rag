@@ -8,7 +8,6 @@
 from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from typing import Any, Callable, final, Optional
-
 from hybrid_rag.core.concurrency import limit_async_func_call
 from hybrid_rag.storage.neo4j import Neo4JStorage
 from hybrid_rag.storage.postgres import PGKVStorage, PGVectorStorage
@@ -22,7 +21,6 @@ from hybrid_rag.core.types import KnowledgeGraph
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 @final
 @dataclass
@@ -92,14 +90,13 @@ class RetrievalRAG:
     rerank_model_max_async: int = field(default=settings.rerank_max_async)
     """Maximum number of concurrent rerank calls."""
 
-    default_rerank_timeout: int = field(default=settings.rerank_timeout)
+    default_rerank_timeout: float = field(default=settings.rerank_timeout)
     """Rerank request timeout in seconds."""
 
     min_rerank_score: float = field(default=settings.min_rerank_score)
     """Minimum rerank score threshold for filtering chunks after reranking."""
 
     # Storage
-    # ---
 
     vector_db_storage_cls_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional parameters for vector database storage."""
@@ -195,19 +192,16 @@ class RetrievalRAG:
             namespace=NameSpace.VECTOR_STORE_ENTITIES,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"entity_name", "source_id", "content", "file_path"},
         )
         self.relationships_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_RELATIONSHIPS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"src_id", "tgt_id", "source_id", "content", "file_path"},
         )
         self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_CHUNKS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"full_doc_id", "content", "file_path"},
         )
 
         self._storages_status = StoragesStatus.CREATED

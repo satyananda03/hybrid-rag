@@ -189,7 +189,6 @@ async def pick_by_vector_similarity(
 
         # Calculate cosine similarities
         similarities = []
-        valid_vectors = 0
         for chunk_id in all_chunk_ids:
             if chunk_id in chunk_vectors:
                 chunk_embedding = chunk_vectors[chunk_id]
@@ -197,7 +196,6 @@ async def pick_by_vector_similarity(
                     # Calculate cosine similarity
                     similarity = cosine_similarity(query_embedding, chunk_embedding)
                     similarities.append((chunk_id, similarity))
-                    valid_vectors += 1
                 except Exception as e:
                     logger.warning(
                         f"Vector similarity chunk selection: failed to calculate similarity for chunk {chunk_id}: {e}"

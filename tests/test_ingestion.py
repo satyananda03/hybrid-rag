@@ -243,7 +243,93 @@ def test_progress_sink_receives_events_with_the_library_set_context():
         ("activity", "menunggu", "warning"),
     ]
 
-def test_settings_require_names_the_missing_env_vars():
-    s = RagSettings(_env_file=None, LLM_BINDING_HOST="h", LLM_BINDING_API_KEY="k")
-    with pytest.raises(RuntimeError, match="EMBEDDING_BINDING_HOST, EMBEDDING_BINDING_API_KEY"):
-        s.require()
+def test_settings_require_checks_only_the_roles_asked_for():
+    s = RagSettings(_env_file=None, KEYWORD_LLM_MODEL="m", KEYWORD_LLM_BINDING_HOST="h")
+    s.require()  # no role, nothing to check
+    with pytest.raises(RuntimeError) as e:
+        s.require("keyword", "contextualize")
+    assert str(e.value) == (
+        "Missing required env vars: KEYWORD_LLM_BINDING_API_KEY, CONTEXTUALIZE_LLM_MODEL, "
+        "CONTEXTUALIZE_LLM_BINDING_HOST, CONTEXTUALIZE_LLM_BINDING_API_KEY"
+    )
+
+
+def test_every_model_role_is_configured_by_the_same_four_settings():
+    from hybrid_rag.config import MODEL_ROLES
+
+    for field, env in MODEL_ROLES.values():
+        for suffix in ("model", "binding_host", "binding_api_key"):
+            assert hasattr(settings, f"{field}_{suffix}"), f"{field}_{suffix}"
+        aliases = {f.validation_alias for f in RagSettings.model_fields.values()}
+        assert {f"{env}_MODEL", f"{env}_BINDING_HOST", f"{env}_BINDING_API_KEY"} <= aliases
+
+# --- provider contract ---------------------------------------------------------------
+
+
+@pytest.fixture
+def recorded_hooks(monkeypatch):
+    """Installs recording hooks for the three model factories; returns their call logs."""
+    from hybrid_rag import providers
+
+    calls = {"llm": [], "embeddings": [], "reranker": []}
+    monkeypatch.setitem(providers._hooks, "get_llm", lambda *a, **kw: calls["llm"].append((a, kw)))
+    monkeypatch.setitem(providers._hooks, "get_embeddings", lambda *a, **kw: calls["embeddings"].append((a, kw)))
+    monkeypatch.setitem(providers._hooks, "get_reranker", lambda *a, **kw: calls["reranker"].append((a, kw)))
+    monkeypatch.setattr(settings, "max_retries", 7)
+    return calls
+
+
+def test_every_model_factory_gets_the_same_connection_arguments(recorded_hooks):
+    from hybrid_rag import providers
+
+    providers.get_llm("m", base_url="h", api_key="k", timeout=9.0, max_tokens=None)
+    providers.get_embeddings("m", base_url="h", api_key="k", timeout=9.0)
+    providers.get_reranker("m", base_url="h", api_key="k", timeout=9.0)
+
+    connection = {"base_url": "h", "api_key": "k", "timeout": 9.0, "max_retries": 7}
+    assert recorded_hooks["llm"] == [(("m",), {**connection, "max_tokens": None})]
+    assert recorded_hooks["embeddings"] == [(("m",), connection)]
+    assert recorded_hooks["reranker"] == [(("m",), connection)]
+
+
+def test_temperature_is_forwarded_only_when_the_library_sets_it(recorded_hooks):
+    from hybrid_rag import providers
+
+    providers.get_llm("m", base_url=None, api_key=None)
+    providers.get_llm("m", base_url=None, api_key=None, temperature=0.0)
+    assert ["temperature" in kw for _, kw in recorded_hooks["llm"]] == [False, True]
+
+
+def test_reranker_is_none_without_a_host_hook(monkeypatch):
+    from hybrid_rag import providers
+
+    monkeypatch.setitem(providers._hooks, "get_reranker", None)
+    assert providers.get_reranker("m", base_url="h", api_key="k") is None
+
+
+def test_embedding_func_builds_its_client_from_settings(recorded_hooks, monkeypatch):
+    from hybrid_rag.core.embedding import build_embedding_func
+
+    monkeypatch.setattr(settings, "embedding_model", "emb-model")
+    monkeypatch.setattr(settings, "embedding_binding_host", "http://emb")
+    monkeypatch.setattr(settings, "embedding_binding_api_key", "emb-key")
+    monkeypatch.setattr(settings, "embedding_timeout", 11.0)
+    build_embedding_func()
+    [(args, kwargs)] = recorded_hooks["embeddings"]
+    assert args == ("emb-model",)
+    assert kwargs == {"base_url": "http://emb", "api_key": "emb-key", "timeout": 11.0, "max_retries": 7}
+
+
+def test_env_example_lists_exactly_the_variables_config_reads():
+    import re
+
+    read = {f.validation_alias for f in RagSettings.model_fields.values() if isinstance(f.validation_alias, str)}
+    listed = re.findall(r"^([A-Z][A-Z0-9_]*)=", Path(".env.example").read_text(), flags=re.M)
+    assert sorted(listed) == sorted(read) and len(listed) == len(set(listed))
+
+
+def test_env_example_changes_no_default():
+    example = RagSettings(_env_file=".env.example")
+    defaults = RagSettings(_env_file=None)
+    # empty values mean "not set": every field must come out as the code default
+    assert example.model_dump() == defaults.model_dump()

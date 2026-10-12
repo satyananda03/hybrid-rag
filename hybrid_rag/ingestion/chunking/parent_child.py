@@ -27,7 +27,6 @@ PARENT_CHUNK_OVERLAP = settings.parent_chunk_overlap
 CHILD_CHUNK_SIZE = settings.child_chunk_size
 CHILD_CHUNK_OVERLAP = settings.child_chunk_overlap
 CONTEXTUALIZE_MAX_ASYNC = settings.contextualize_max_async
-CONTEXTUALIZE_MODEL = settings.contextualize_model or settings.llm_model
 
 def _locate(haystack: str, needle: str, search_from: int) -> tuple[int, int] | None:
     """Span ``needle`` di ``haystack`` sejak ``search_from``; verbatim dulu, lalu abaikan spasi."""
@@ -198,7 +197,7 @@ def contextualize_chain() -> Runnable:
                             "text": "<document>\n{parent_content}\n</document>\n\n",
                             # Nova tidak cache otomatis: LiteLLM menjadikan ini Bedrock cachePoint
                             # setelah blok dokumen (prefix system + parent). Model lain tidak dikirimi.
-                            **({"cache_control": {"type": "ephemeral"}} if CONTEXTUALIZE_MODEL in NOVA_MODELS else {}),
+                            **({"cache_control": {"type": "ephemeral"}} if settings.contextualize_llm_model in NOVA_MODELS else {}),
                         },
                         {"type": "text", "text": CONTEXTUALIZE_USER_TEMPLATE},
                     ],
@@ -206,14 +205,15 @@ def contextualize_chain() -> Runnable:
             ]
         )
         | providers.get_llm(
-            CONTEXTUALIZE_MODEL,
+            model_id=settings.contextualize_llm_model,
             temperature=0.0,
             # The answer is one short paragraph, but a hard cap would truncate it
             # mid-sentence and poison the chunk it is prepended to. On Nova the cap
             # also counts reasoning tokens, so a small one yields an empty context.
             max_tokens=None,
-            base_url=settings.llm_binding_host,
-            api_key=settings.llm_binding_api_key,
+            base_url=settings.contextualize_llm_binding_host,
+            api_key=settings.contextualize_llm_binding_api_key,
+            timeout=settings.contextualize_llm_timeout,
         )
         | StrOutputParser()
     )
@@ -240,10 +240,10 @@ async def contextualize_children(
     written, so the caller can start work on it (embedding) without waiting
     for the slowest child.
 
-    Runs on :data:`contextualize_chain` against ``CONTEXTUALIZE_MODEL`` — a
+    Runs on :data:`contextualize_chain` against ``CONTEXTUALIZE_LLM_*`` — a
     model chosen for prompt caching, which is why this step has its own chain
-    rather than sharing the extraction one. The client underneath still comes
-    from ``services/llm_service``, so retries and binding are the shared ones.
+    and its own model, endpoint, key and timeout rather than sharing the
+    extraction ones.
 
     Always runs — there is no off switch. A child chunk without its parent's
     context is what retrieval was failing on, so skipping this step silently

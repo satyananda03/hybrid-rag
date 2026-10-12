@@ -455,10 +455,6 @@ SQL_TEMPLATES = {
                       file_path=EXCLUDED.file_path,
                       update_time = EXCLUDED.update_time
                      """,
-    # DROP tables
-    "drop_specifiy_table_workspace": """
-        DELETE FROM {table_name} WHERE workspace=$1
-       """,
     # Read path (retrieval)
     # The "+ 0" in every ORDER BY below keeps the HNSW index out of these queries on
     # purpose. HNSW takes the ef_search nearest rows of the WHOLE shared table and only

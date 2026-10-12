@@ -26,10 +26,10 @@ async def build_rag(workspace: str) -> IngestionRAG:
     The caller owns the returned instance and is responsible for
     ``await rag.finalize_storages()`` on shutdown.
     """
-    settings.require()
+    settings.require("extract", "contextualize", "embedding")
     rag = IngestionRAG(
         workspace=workspace,
-        llm_model_max_async=settings.llm_max_async,
+        llm_model_max_async=settings.extract_llm_max_async,
         enable_llm_cache=settings.enable_llm_cache,
         embedding_func=build_embedding_func(),
     )

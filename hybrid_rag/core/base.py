@@ -69,7 +69,6 @@ class StorageNameSpace(ABC):
 class BaseVectorStorage(StorageNameSpace, ABC):
     embedding_func: EmbeddingFunc
     cosine_better_than_threshold: float = field(default=0.2)
-    meta_fields: set[str] = field(default_factory=set)
 
     def _validate_embedding_func(self):
         """Validate that embedding_func is provided.

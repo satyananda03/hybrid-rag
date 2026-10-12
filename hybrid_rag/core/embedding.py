@@ -8,13 +8,14 @@ from hybrid_rag.core.utils import EmbeddingFunc
 def build_embedding_func() -> EmbeddingFunc:
     """Adapt the host's LangChain embedding model to the storages' ndarray contract.
 
-    Token truncation, retries and the cached client stay with the host's
-    ``get_embeddings``; this only converts to float32 arrays.
+    Token truncation, retries and the cached client stay with the client the host's
+    ``get_embeddings`` builds; this only converts to float32 arrays.
     """
     embeddings = providers.get_embeddings(
-        settings.embedding_model,
-        settings.embedding_binding_host,
-        settings.embedding_binding_api_key,
+        model_id=settings.embedding_model,
+        base_url=settings.embedding_binding_host,
+        api_key=settings.embedding_binding_api_key,
+        timeout=settings.embedding_timeout,
     )
 
     async def embed(texts: list[str]) -> np.ndarray:

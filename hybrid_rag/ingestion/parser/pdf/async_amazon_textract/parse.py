@@ -11,7 +11,6 @@ yang lewat ``asyncio.to_thread``. Jumlah job bersamaan per proses dibatasi
 """
 import asyncio
 import io
-import json
 import os
 import random
 import time
@@ -123,11 +122,6 @@ def _raw_pages(first: dict, blocks: list, sizes: list) -> list:
     return raw_pages
 
 
-def _write_json(path: str, data: dict) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-
-
 async def _run_job(pdf_bytes: bytes, n_pages: int) -> tuple[dict, list]:
     """Upload → Start → polling → kumpulkan Blocks; input S3 selalu dihapus."""
     token = uuid.uuid4().hex
@@ -155,8 +149,12 @@ async def _run_job(pdf_bytes: bytes, n_pages: int) -> tuple[dict, list]:
             logger.warning(f"[Textract] Gagal menghapus input S3 {key}", exc_info=True)
 
 
-async def parse_document_to_json(file_path: str, output_file: str = "raw_output.json", region_name: str = None, max_workers: int = None) -> dict:
-    """Pipeline PDF -> raw Output JSON via Textract async. Argumen sama dengan versi sync, tapi di-``await``."""
+async def parse_document_to_json(file_path: str, output_file: str = "raw_output.json") -> dict:
+    """Pipeline PDF -> raw Output JSON via Textract async.
+
+    ``output_file`` only places the working directory: the figure crops go to
+    ``images/`` next to it.
+    """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"❌ File tidak ditemukan: {file_path}")
     if settings.textract_region != settings.resolved_s3_region:
@@ -186,8 +184,6 @@ async def parse_document_to_json(file_path: str, output_file: str = "raw_output.
         "images_dir": images_dir,
         "pages": raw_pages,
     }
-    # await asyncio.to_thread(_write_json, output_file, raw_data)
-    # print(f"[Textract] Raw JSON disimpan ke: {output_file}")
 
     failed_pages = [p for p in raw_pages if p["error"]]
     if failed_pages:

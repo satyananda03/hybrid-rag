@@ -25,10 +25,7 @@ import numpy as np
 from hybrid_rag.storage.postgres.bm25 import preprocess_indonesian_fast
 from hybrid_rag.core.base import BaseVectorStorage
 from hybrid_rag.core.namespace import NameSpace, is_namespace
-from hybrid_rag.core.utils import (
-    performance_timing_log,
-    validate_workspace,
-)
+from hybrid_rag.core.utils import validate_workspace
 from hybrid_rag.config import settings
 import logging
 
@@ -686,16 +683,6 @@ class PGVectorStorage(BaseVectorStorage):
                     f"and {pending_deletes} pending deletes cannot be flushed"
                 )
 
-            timing_label = f"{self.workspace} PGVectorStorage.flush[{self.namespace}]"
-            total_start = time.perf_counter()
-            performance_timing_log(
-                "[%s] start upserts=%s deletes=%s max_batch_size=%s",
-                timing_label,
-                len(self._pending_vector_docs),
-                len(self._pending_vector_deletes),
-                self._max_batch_size,
-            )
-
             # --- Embedding phase ---------------------------------------------
             docs_to_embed = [
                 (doc_id, pending_doc)
@@ -715,7 +702,6 @@ class PGVectorStorage(BaseVectorStorage):
                     f"{len(docs_to_embed)} vectors in {len(batches)} batch(es) "
                     f"(batch_num={self._max_batch_size})"
                 )
-                embedding_start = time.perf_counter()
                 try:
                     embeddings_list = await asyncio.gather(
                         *[
@@ -729,13 +715,6 @@ class PGVectorStorage(BaseVectorStorage):
                         f"(upserts={len(docs_to_embed)}): {e}"
                     )
                     raise
-                performance_timing_log(
-                    "[%s] embedding completed in %.4fs docs=%s batches=%s",
-                    timing_label,
-                    time.perf_counter() - embedding_start,
-                    len(docs_to_embed),
-                    len(batches),
-                )
                 embeddings = np.concatenate(embeddings_list)
                 # Explicit check: a count mismatch under `python -O` would
                 # silently truncate via zip(), mispairing vectors with docs.
@@ -833,9 +812,7 @@ class PGVectorStorage(BaseVectorStorage):
             )
 
             try:
-                for batch_index, (sub_batch, estimated_bytes) in enumerate(
-                    upsert_batches, start=1
-                ):
+                for sub_batch, estimated_bytes in upsert_batches:
                     if (
                         len(sub_batch) == 1
                         and self._max_upsert_payload_bytes > 0
@@ -850,24 +827,11 @@ class PGVectorStorage(BaseVectorStorage):
                         connection: asyncpg.Connection,
                         _sql: str = upsert_sql,
                         _data: list[tuple] = sub_batch,
-                        _batch_index: int = batch_index,
-                        _num_batches: int = len(upsert_batches),
                     ) -> None:
                         async with connection.transaction():
-                            execute_start = time.perf_counter()
                             await connection.executemany(_sql, _data)
-                            performance_timing_log(
-                                "[%s] sub-batch %s/%s executemany completed in %.4fs batch_size=%s",
-                                timing_label,
-                                _batch_index,
-                                _num_batches,
-                                time.perf_counter() - execute_start,
-                                len(_data),
-                            )
 
-                    await self.db._run_with_retry(
-                        _flush_upsert, timing_label=timing_label
-                    )
+                    await self.db._run_with_retry(_flush_upsert)
 
                 for i in range(0, len(pending_delete_ids), delete_chunk):
                     id_slice = pending_delete_ids[i : i + delete_chunk]
@@ -879,9 +843,7 @@ class PGVectorStorage(BaseVectorStorage):
                         async with connection.transaction():
                             await connection.execute(delete_sql, self.workspace, _ids)
 
-                    await self.db._run_with_retry(
-                        _flush_delete, timing_label=timing_label
-                    )
+                    await self.db._run_with_retry(_flush_delete)
             except Exception as e:
                 logger.error(
                     f"[{self.workspace}] Error flushing vector ops "
@@ -894,13 +856,6 @@ class PGVectorStorage(BaseVectorStorage):
             # those records and are GC'd with them.
             self._pending_vector_docs.clear()
             self._pending_vector_deletes.clear()
-            performance_timing_log(
-                "[%s] total complete in %.4fs upserts=%s deletes=%s",
-                timing_label,
-                time.perf_counter() - total_start,
-                len(batch_values),
-                len(pending_delete_ids),
-            )
 
     async def query(self, query: str, top_k: int, query_embedding: list[float] = None) -> list[dict[str, Any]]:
         """Nearest rows for ``query``; the chunks namespace fuses vector and BM25 with RRF."""

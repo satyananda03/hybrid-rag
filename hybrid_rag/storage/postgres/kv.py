@@ -3,7 +3,6 @@ chunk maps, and the LLM response cache.
 """
 
 from hybrid_rag.core.concurrency import _cooperative_yield
-import time
 import json
 import datetime
 from datetime import timezone
@@ -16,10 +15,7 @@ from typing import (
 
 from hybrid_rag.core.base import BaseKVStorage
 from hybrid_rag.core.namespace import NameSpace, is_namespace
-from hybrid_rag.core.utils import (
-    performance_timing_log,
-    validate_workspace,
-)
+from hybrid_rag.core.utils import validate_workspace
 import logging
 
 from hybrid_rag.storage.shared import get_data_init_lock
@@ -36,7 +32,6 @@ from hybrid_rag.storage.postgres.connection import (
     _estimate_record_bytes,
     _resolve_pg_batch_limits,
 )
-from hybrid_rag.storage.postgres.connection import _timing_details_suffix
 from hybrid_rag.storage.postgres.sql import SQL_TEMPLATES, namespace_to_table_name
 
 logger = logging.getLogger(__name__)
@@ -455,18 +450,8 @@ class PGKVStorage(BaseKVStorage):
         if not data:
             return
 
-        timing_label = f"{self.workspace} PGKVStorage.upsert[{self.namespace}]"
-        total_start = time.perf_counter()
-        performance_timing_log(
-            "[%s] start records=%s max_batch_size=%s",
-            timing_label,
-            len(data),
-            self._max_batch_size,
-        )
-
         batch_values: list[tuple] = []
         upsert_sql = ""
-        batch_values_build_start = time.perf_counter()
 
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
@@ -619,13 +604,6 @@ class PGKVStorage(BaseKVStorage):
             raise ValueError(f"Unknown namespace: {self.namespace}")
 
         # upsert_sql is always set here; unknown namespace raises ValueError above
-        performance_timing_log(
-            "[%s] batch_values build completed in %.4fs records=%s%s",
-            timing_label,
-            time.perf_counter() - batch_values_build_start,
-            len(batch_values),
-            _timing_details_suffix(namespace=self.namespace),
-        )
         if batch_values:
             # Split into payload-byte (primary) / record-count (secondary)
             # bounded sub-batches to bound peak memory and transaction duration
@@ -645,9 +623,7 @@ class PGKVStorage(BaseKVStorage):
                     f"{log_prefix} split into {num_batches} batches "
                     f"for {len(batch_values)} records"
                 )
-            for batch_index, (sub_batch, estimated_bytes) in enumerate(
-                batches, start=1
-            ):
+            for sub_batch, estimated_bytes in batches:
                 if (
                     len(sub_batch) == 1
                     and self._max_upsert_payload_bytes > 0
@@ -662,32 +638,15 @@ class PGKVStorage(BaseKVStorage):
                     connection: asyncpg.Connection,
                     _sql: str = upsert_sql,
                     _data: list[tuple] = sub_batch,
-                    _batch_index: int = batch_index,
-                    _num_batches: int = num_batches,
                 ) -> None:
-                    execute_start = time.perf_counter()
                     await connection.executemany(_sql, _data)
-                    performance_timing_log(
-                        "[%s] sub-batch %s/%s executemany completed in %.4fs batch_size=%s",
-                        timing_label,
-                        _batch_index,
-                        _num_batches,
-                        time.perf_counter() - execute_start,
-                        len(_data),
-                    )
 
-                await self.db._run_with_retry(_batch_upsert, timing_label=timing_label)
+                await self.db._run_with_retry(_batch_upsert)
 
             logger.debug(
                 f"[{self.workspace}] Batch upserted {len(batch_values)} records to {self.namespace} "
                 f"in {num_batches} sub-batches"
             )
-        performance_timing_log(
-            "[%s] total complete in %.4fs records=%s",
-            timing_label,
-            time.perf_counter() - total_start,
-            len(batch_values),
-        )
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically

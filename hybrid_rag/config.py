@@ -1,25 +1,33 @@
-"""Settings the package reads, from the environment and ``.env``."""
 from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 NOVA_MODELS: frozenset[str] = frozenset({"mjai.nova-2-lite-v1:0"})
 
+#: Every model role is configured on its own, with no shared default: its model,
+#: ``*_BINDING_HOST``, ``*_BINDING_API_KEY`` and optional ``*_TIMEOUT``.
+#: role -> (settings field prefix, env var prefix); see :meth:`RagSettings.require`.
+MODEL_ROLES: dict[str, tuple[str, str]] = {
+    "extract": ("extract_llm", "EXTRACT_LLM"),
+    "contextualize": ("contextualize_llm", "CONTEXTUALIZE_LLM"),
+    "keyword": ("keyword_llm", "KEYWORD_LLM"),
+    "vlm": ("vlm", "VLM"),
+    "embedding": ("embedding", "EMBEDDING"),
+}
+
+
 class RagSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-    llm_binding_host: Optional[str] = Field(default=None, validation_alias="LLM_BINDING_HOST")
-    llm_binding_api_key: Optional[str] = Field(default=None, validation_alias="LLM_BINDING_API_KEY")
-    llm_model: str = Field(default="gpt-4o-mini", validation_alias="LLM_MODEL")
-    llm_max_async: int = Field(default=4, validation_alias="LLM_MAX_ASYNC")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)  # `KEY=` means unset
+    extract_llm_max_async: int = Field(default=4, validation_alias="EXTRACT_LLM_MAX_ASYNC")
     keyword_llm_model: Optional[str] = Field(default=None, validation_alias="KEYWORD_LLM_MODEL")
     keyword_llm_binding_host: Optional[str] = Field(default=None, validation_alias="KEYWORD_LLM_BINDING_HOST")
     keyword_llm_binding_api_key: Optional[str] = Field(default=None, validation_alias="KEYWORD_LLM_BINDING_API_KEY")
-    keyword_llm_timeout: Optional[int] = Field(default=None, validation_alias="KEYWORD_LLM_TIMEOUT")
+    keyword_llm_timeout: Optional[float] = Field(default=None, validation_alias="KEYWORD_LLM_TIMEOUT")
     extract_llm_model: Optional[str] = Field(default=None, validation_alias="EXTRACT_LLM_MODEL")
     extract_llm_binding_host: Optional[str] = Field(default=None, validation_alias="EXTRACT_LLM_BINDING_HOST")
     extract_llm_binding_api_key: Optional[str] = Field(default=None, validation_alias="EXTRACT_LLM_BINDING_API_KEY")
-    extract_llm_timeout: Optional[int] = Field(default=None, validation_alias="EXTRACT_LLM_TIMEOUT")
-    vlm_model: str = Field(default="mjai.kimi-k2.5", validation_alias="VLM_MODEL")
+    extract_llm_timeout: Optional[float] = Field(default=None, validation_alias="EXTRACT_LLM_TIMEOUT")
+    vlm_model: Optional[str] = Field(default=None, validation_alias="VLM_MODEL")
     vlm_binding_host: Optional[str] = Field(default=None, validation_alias="VLM_BINDING_HOST")
     vlm_binding_api_key: Optional[str] = Field(default=None, validation_alias="VLM_BINDING_API_KEY")
     vlm_max_async: int = Field(default=3, validation_alias="VLM_MAX_ASYNC")
@@ -28,10 +36,8 @@ class RagSettings(BaseSettings):
     embedding_binding_host: Optional[str] = Field(default=None, validation_alias="EMBEDDING_BINDING_HOST")
     embedding_binding_api_key: Optional[str] = Field(default=None, validation_alias="EMBEDDING_BINDING_API_KEY")
     embedding_model: str = Field(default="mjai.titan-embed-text-v2:0", validation_alias="EMBEDDING_MODEL")
-    # Juga dipakai tabel ``rag.chunks`` (Nova diminta ``dimensions`` ini); <= 2000 agar HNSW bisa mengindeksnya.
     embedding_dim: int = Field(default=1024, validation_alias="EMBEDDING_DIM")
     embedding_token_limit: int = Field(default=8192, validation_alias="EMBEDDING_TOKEN_LIMIT")
-    # 1: the proxy fans a batch out concurrently and Bedrock throttles it; raise EMBEDDING_FUNC_MAX_ASYNC instead.
     embedding_batch_num: int = Field(default=1, validation_alias="EMBEDDING_BATCH_NUM")
     embedding_func_max_async: int = Field(default=8, validation_alias="EMBEDDING_FUNC_MAX_ASYNC")
     embedding_timeout: float = Field(default=60.0, validation_alias="EMBEDDING_TIMEOUT")
@@ -52,16 +58,18 @@ class RagSettings(BaseSettings):
     rerank_binding_host: Optional[str] = Field(default=None, validation_alias="RERANK_BINDING_HOST")
     rerank_binding_api_key: Optional[str] = Field(default=None, validation_alias="RERANK_BINDING_API_KEY")
     rerank_max_async: int = Field(default=4, validation_alias="RERANK_MAX_ASYNC")
-    rerank_timeout: int = Field(default=30, validation_alias="RERANK_TIMEOUT")
+    rerank_timeout: float = Field(default=30.0, validation_alias="RERANK_TIMEOUT")
     min_rerank_score: float = Field(default=0.0, validation_alias="MIN_RERANK_SCORE")
     rerank_by_default: bool = Field(default=True, validation_alias="RERANK_BY_DEFAULT")
     enable_llm_cache: bool = Field(default=True, validation_alias="ENABLE_LLM_CACHE")
-    performance_timing_logs: bool = Field(default=False, validation_alias="PERFORMANCE_TIMING_LOGS")
     parent_chunk_size: int = Field(default=2500, validation_alias="PARENT_CHUNK_SIZE")
     parent_chunk_overlap: int = Field(default=200, validation_alias="PARENT_CHUNK_OVERLAP")
     child_chunk_size: int = Field(default=310, validation_alias="CHILD_CHUNK_SIZE")
     child_chunk_overlap: int = Field(default=50, validation_alias="CHILD_CHUNK_OVERLAP")
-    contextualize_model: Optional[str] = Field(default=None, validation_alias="CONTEXTUALIZE_MODEL")
+    contextualize_llm_model: Optional[str] = Field(default=None, validation_alias="CONTEXTUALIZE_LLM_MODEL")
+    contextualize_llm_binding_host: Optional[str] = Field(default=None, validation_alias="CONTEXTUALIZE_LLM_BINDING_HOST")
+    contextualize_llm_binding_api_key: Optional[str] = Field(default=None, validation_alias="CONTEXTUALIZE_LLM_BINDING_API_KEY")
+    contextualize_llm_timeout: Optional[float] = Field(default=None, validation_alias="CONTEXTUALIZE_LLM_TIMEOUT")
     contextualize_max_async: int = Field(default=10, validation_alias="CONTEXTUALIZE_MAX_ASYNC")
     leading_context_tokens: int = Field(default=500, validation_alias="LEADING_CONTEXT_TOKENS")
     trailing_context_tokens: int = Field(default=500, validation_alias="TRAILING_CONTEXT_TOKENS")
@@ -121,61 +129,27 @@ class RagSettings(BaseSettings):
     neo4j_liveness_check_timeout: float = Field(default=30.0, validation_alias="NEO4J_LIVENESS_CHECK_TIMEOUT")
     neo4j_keep_alive: bool = Field(default=True, validation_alias="NEO4J_KEEP_ALIVE")
 
-    # Role-specific LLMs fall back to the base LLM binding.
-    @property
-    def resolved_extract_model(self) -> str:
-        return self.extract_llm_model or self.llm_model
-
-    @property
-    def resolved_extract_host(self) -> Optional[str]:
-        return self.extract_llm_binding_host or self.llm_binding_host
-
-    @property
-    def resolved_extract_api_key(self) -> Optional[str]:
-        return self.extract_llm_binding_api_key or self.llm_binding_api_key
-
-    @property
-    def resolved_keyword_model(self) -> str:
-        return self.keyword_llm_model or self.llm_model
-
-    @property
-    def resolved_keyword_host(self) -> Optional[str]:
-        return self.keyword_llm_binding_host or self.llm_binding_host
-
-    @property
-    def resolved_keyword_api_key(self) -> Optional[str]:
-        return self.keyword_llm_binding_api_key or self.llm_binding_api_key
-
-    @property
-    def resolved_vlm_binding_host(self) -> Optional[str]:
-        return self.vlm_binding_host or self.llm_binding_host
-
-    @property
-    def resolved_vlm_binding_api_key(self) -> Optional[str]:
-        return self.vlm_binding_api_key or self.llm_binding_api_key
-
     @property
     def resolved_s3_region(self) -> Optional[str]:
         return self.s3_region
 
     @property
     def pg_async_pool_size(self) -> int:
-        """Connections per role pool; there are two (ingestion and retrieval)."""
         return max(4, self.postgres_max_connections // 5)
 
-    def require(self) -> None:
-        """Fail fast when the model bindings the pipeline needs are unset."""
-        missing = [
-            name
-            for name, value in (
-                ("LLM_BINDING_HOST", self.llm_binding_host),
-                ("LLM_BINDING_API_KEY", self.llm_binding_api_key),
-                ("EMBEDDING_BINDING_HOST", self.embedding_binding_host),
-                ("EMBEDDING_BINDING_API_KEY", self.embedding_binding_api_key),
-            )
-            if not value
-        ]
+    def require(self, *roles: str) -> None:
+        """Fail fast when a model role the caller needs is not fully configured.
+
+        ``roles`` are keys of :data:`MODEL_ROLES`; each needs its model, host and key.
+        """
+        missing = []
+        for role in roles:
+            field, env = MODEL_ROLES[role]
+            for suffix in ("model", "binding_host", "binding_api_key"):
+                if not getattr(self, f"{field}_{suffix}"):
+                    missing.append(f"{env}_{suffix.upper()}")
         if missing:
             raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+
 
 settings = RagSettings()

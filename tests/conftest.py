@@ -12,7 +12,7 @@ class FakeLLM:
 @pytest.fixture
 def fake_llm(monkeypatch):
     from hybrid_rag.ingestion.knowledge_graph import chain
-    monkeypatch.setitem(providers._hooks, "get_llm", lambda **_: FakeLLM())
+    monkeypatch.setitem(providers._hooks, "get_llm", lambda *_, **__: FakeLLM())
     chain._build_chains.cache_clear()
     chain._extract_llm.cache_clear()
     yield

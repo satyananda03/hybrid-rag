@@ -5,7 +5,6 @@ Backs ``get_docs_by_status`` / ``get_docs_by_statuses`` and the duplicate
 lookups by file basename and content hash.
 """
 from hybrid_rag.core.concurrency import _cooperative_yield
-import time
 import json
 import datetime
 from datetime import timezone
@@ -20,10 +19,7 @@ from hybrid_rag.core.base import (
     DocStatus,
     DocStatusStorage,
 )
-from hybrid_rag.core.utils import (
-    performance_timing_log,
-    validate_workspace,
-)
+from hybrid_rag.core.utils import validate_workspace
 import logging
 
 from hybrid_rag.storage.shared import get_data_init_lock
@@ -505,14 +501,6 @@ class PGDocStatusStorage(DocStatusStorage):
         if not data:
             return
 
-        timing_label = f"{self.workspace} PGDocStatusStorage.upsert"
-        total_start = time.perf_counter()
-        performance_timing_log(
-            "[%s] start records=%s",
-            timing_label,
-            len(data),
-        )
-
         # NOTE: content_hash uses COALESCE(NULLIF(...,''), existing) rather than
         # a straight EXCLUDED overwrite. This gives write-once-after-set
         # semantics: once a non-empty content_hash is recorded, subsequent
@@ -549,7 +537,6 @@ class PGDocStatusStorage(DocStatusStorage):
         #   error_msg, content_hash, created_at, updated_at)
         batch: list[tuple] = []
         skipped: list[str] = []
-        batch_build_start = time.perf_counter()
         for i, (k, v) in enumerate(data.items(), start=1):
             try:
                 batch.append(
@@ -588,13 +575,6 @@ class PGDocStatusStorage(DocStatusStorage):
             logger.warning(
                 f"[{self.workspace}] {len(skipped)} document(s) skipped in batch upsert: {skipped}"
             )
-        performance_timing_log(
-            "[%s] batch validation/assembly completed in %.4fs valid_count=%s skipped_count=%s",
-            timing_label,
-            time.perf_counter() - batch_build_start,
-            len(batch),
-            len(skipped),
-        )
 
         # Split into payload-byte / record-count bounded sub-batches, each its
         # own transaction (mirrors KV upsert / mongo_impl). ON CONFLICT makes
@@ -612,7 +592,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 f"{log_prefix} split into {num_batches} batches "
                 f"for {len(batch)} records"
             )
-        for batch_index, (sub_batch, estimated_bytes) in enumerate(batches, start=1):
+        for sub_batch, estimated_bytes in batches:
             if (
                 len(sub_batch) == 1
                 and self._max_upsert_payload_bytes > 0
@@ -627,30 +607,12 @@ class PGDocStatusStorage(DocStatusStorage):
                 connection: asyncpg.Connection,
                 _sql: str = sql,
                 _data: list[tuple] = sub_batch,
-                _batch_index: int = batch_index,
-                _num_batches: int = num_batches,
             ) -> None:
-                execute_start = time.perf_counter()
                 async with connection.transaction():
                     await connection.executemany(_sql, _data)
-                performance_timing_log(
-                    "[%s] sub-batch %s/%s transaction + executemany completed in %.4fs batch_size=%s",
-                    timing_label,
-                    _batch_index,
-                    _num_batches,
-                    time.perf_counter() - execute_start,
-                    len(_data),
-                )
 
-            await self.db._run_with_retry(_batch_upsert, timing_label=timing_label)
+            await self.db._run_with_retry(_batch_upsert)
         logger.debug(
             f"[{self.workspace}] Batch upserted {len(batch)} records to {self.namespace}"
-        )
-        performance_timing_log(
-            "[%s] total complete in %.4fs valid_count=%s skipped_count=%s",
-            timing_label,
-            time.perf_counter() - total_start,
-            len(batch),
-            len(skipped),
         )
 

@@ -1,17 +1,6 @@
 
-"""PostgreSQL connection pool, schema bootstrap, and batching helpers.
-
-:class:`PostgreSQLDB` owns the asyncpg pool, creates the tables and indexes on
-first use, and runs every query with retry. :class:`ClientManager` hands one
-shared pool to all four storage classes so a process opens the pool once.
-
-The module-level helpers size write batches: asyncpg has a parameter ceiling and
-a statement-size ceiling, so upserts are chunked by estimated payload bytes as
-well as record count.
-"""
-
+"""PostgreSQL connection pool, schema bootstrap, and batching helpers."""
 import asyncio
-import time
 import hashlib
 import json
 from typing import (
@@ -32,9 +21,6 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
     wait_fixed,
-)
-from hybrid_rag.core.utils import (
-    performance_timing_log,
 )
 import logging
 
@@ -227,11 +213,6 @@ def _safe_index_name(table_name: str, index_suffix: str) -> str:
     return shortened_name
 
 
-def _timing_details_suffix(**details: Any) -> str:
-    parts = [f"{key}={value}" for key, value in details.items()]
-    return f" {' '.join(parts)}" if parts else ""
-
-
 class PostgreSQLDB:
     def __init__(self, config: dict[str, Any], **kwargs: Any):
         self.host = config["host"]
@@ -240,7 +221,6 @@ class PostgreSQLDB:
         self.password = config["password"]
         self.database = config["database"]
         self.max = int(config["max_connections"])
-        self.increment = 1
         self.pool: Pool | None = None
 
         # TLS. Server saat ini ssl=off; isi POSTGRES_SSL_MODE=require begitu
@@ -431,8 +411,6 @@ class PostgreSQLDB:
     async def _run_with_retry(
         self,
         operation: Callable[[asyncpg.Connection], Awaitable[T]],
-        *,
-        timing_label: str | None = None,
     ) -> T:
         """
         Execute a database operation with automatic retry for transient failures.
@@ -466,66 +444,8 @@ class PostgreSQLDB:
             with attempt:
                 await self._ensure_pool()
                 assert self.pool is not None
-                if timing_label:
-                    pool_snapshot_before = self._get_pool_snapshot()
-                    performance_timing_log(
-                        "[%s] pool.acquire waiting %s",
-                        timing_label,
-                        pool_snapshot_before,
-                    )
-                acquire_start = time.perf_counter()
                 async with self.pool.acquire() as connection:  # type: ignore[arg-type]
-                    acquire_elapsed = time.perf_counter() - acquire_start
-                    if timing_label:
-                        pool_snapshot_after = self._get_pool_snapshot()
-                        performance_timing_log(
-                            "[%s] pool.acquire completed in %.4fs %s",
-                            timing_label,
-                            acquire_elapsed,
-                            pool_snapshot_after,
-                        )
                     return await operation(connection)
-
-    def _get_pool_snapshot(self) -> str:
-        """Best-effort snapshot of asyncpg pool state for diagnostics.
-
-        Uses asyncpg private attributes defensively; if a field is unavailable in the
-        installed asyncpg version, return '?' for that metric instead of failing.
-        """
-        pool = self.pool
-        if pool is None:
-            return "pool_state=uninitialized"
-
-        holders = getattr(pool, "_holders", None)
-        queue = getattr(pool, "_queue", None)
-        max_size = getattr(pool, "_maxsize", None)
-        min_size = getattr(pool, "_minsize", None)
-
-        total_holders = len(holders) if holders is not None else "?"
-        idle_count: int | str = "?"
-        acquired_count: int | str = "?"
-
-        if holders is not None:
-            idle_count = 0
-            acquired_count = 0
-            for holder in holders:
-                # asyncpg holder uses _in_use Future/Event-like marker; treat present value as acquired
-                in_use_marker = getattr(holder, "_in_use", None)
-                if in_use_marker:
-                    acquired_count += 1
-                else:
-                    idle_count += 1
-
-        waiting_count: int | str = "?"
-        if queue is not None:
-            getters = getattr(queue, "_getters", None)
-            if getters is not None:
-                waiting_count = len(getters)
-
-        return (
-            f"pool_state[min={min_size}, max={max_size}, holders={total_holders}, "
-            f"acquired={acquired_count}, idle={idle_count}, waiting={waiting_count}]"
-        )
 
     async def _ensure_schema(self, connection: asyncpg.Connection) -> None:
         """Create the target schema if it does not exist.
@@ -835,26 +755,13 @@ class PostgreSQLDB:
         sql: str,
         params: list[Any] | None = None,
         multirows: bool = False,
-        timing_label: str | None = None,
     ) -> dict[str, Any] | None | list[dict[str, Any]]:
         async def _operation(connection: asyncpg.Connection) -> Any:
             prepared_params = tuple(params) if params else ()
-            fetch_start = time.perf_counter()
             if prepared_params:
                 rows = await connection.fetch(sql, *prepared_params)
             else:
                 rows = await connection.fetch(sql)
-            fetch_elapsed = time.perf_counter() - fetch_start
-
-            if timing_label:
-                performance_timing_log(
-                    "[%s] connection.fetch completed in %.4fs row_count=%s",
-                    timing_label,
-                    fetch_elapsed,
-                    len(rows),
-                )
-
-            conversion_start = time.perf_counter()
 
             if multirows:
                 if rows:
@@ -862,15 +769,6 @@ class PostgreSQLDB:
                     converted_rows = [dict(zip(columns, row)) for row in rows]
                 else:
                     converted_rows = []
-
-                if timing_label:
-                    conversion_elapsed = time.perf_counter() - conversion_start
-                    performance_timing_log(
-                        "[%s] result conversion completed in %.4fs multirows=%s",
-                        timing_label,
-                        conversion_elapsed,
-                        True,
-                    )
                 return converted_rows
 
             if rows:
@@ -878,24 +776,10 @@ class PostgreSQLDB:
                 converted_row = dict(zip(columns, rows[0]))
             else:
                 converted_row = None
-
-            if timing_label:
-                conversion_elapsed = time.perf_counter() - conversion_start
-                performance_timing_log(
-                    "[%s] result conversion completed in %.4fs multirows=%s",
-                    timing_label,
-                    conversion_elapsed,
-                    False,
-                )
-            if converted_row is not None:
-                return converted_row
-            return None
+            return converted_row
 
         try:
-            return await self._run_with_retry(
-                _operation,
-                timing_label=timing_label,
-            )
+            return await self._run_with_retry(_operation)
         except Exception as e:
             logger.error(f"PostgreSQL database, error:{e}")
             raise
@@ -919,11 +803,9 @@ class PostgreSQLDB:
         data: dict[str, Any] | None = None,
         upsert: bool = False,
         ignore_if_exists: bool = False,
-        timing_label: str | None = None,
     ):
         async def _operation(connection: asyncpg.Connection) -> Any:
             prepared_values = tuple(data.values()) if data else ()
-            execute_start = time.perf_counter()
             try:
                 if not data:
                     result = await connection.execute(sql)
@@ -946,28 +828,10 @@ class PostgreSQLDB:
                     result = None
                 else:
                     raise
-            except Exception:
-                if timing_label:
-                    performance_timing_log(
-                        "[%s] connection.execute failed after %.4fs",
-                        timing_label,
-                        time.perf_counter() - execute_start,
-                    )
-                raise
-            if timing_label:
-                performance_timing_log(
-                    "[%s] connection.execute completed in %.4fs result=%s",
-                    timing_label,
-                    time.perf_counter() - execute_start,
-                    result,
-                )
             return result
 
         try:
-            await self._run_with_retry(
-                _operation,
-                timing_label=timing_label,
-            )
+            await self._run_with_retry(_operation)
         except Exception as e:
             logger.error(f"PostgreSQL database,\nsql:{sql},\ndata:{data},\nerror:{e}")
             raise

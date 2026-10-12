@@ -771,7 +771,6 @@ class _PipelineMixin:
         """Validate and fix document data consistency by deleting inconsistent entries, but preserve failed documents"""
         inconsistent_docs = []
         failed_docs_to_preserve = []
-        successful_deletions = 0
 
         # Check each document's data consistency: one existence query for the
         # whole batch, since only whether full_docs has the row matters here,
@@ -804,7 +803,6 @@ class _PipelineMixin:
             )
             logger.info(summary_message)
 
-            successful_deletions = 0
             for doc_id in inconsistent_docs:
                 # No content to process, whether or not its status row can be
                 # removed now: take it out of this batch either way.
@@ -812,7 +810,6 @@ class _PipelineMixin:
                 file_path = resolve_doc_file_path(status_doc=status_doc)
                 try:
                     await self.doc_status.delete([doc_id])
-                    successful_deletions += 1
                     logger.info(f"Deleted inconsistent entry: {doc_id} ({file_path})")
                 except Exception as e:
                     # Log deletion failure
@@ -1068,12 +1065,9 @@ class _PipelineMixin:
                     file_path=file_path_w,
                 )
 
-                # Drop the heavy body from the queue payload; q_process
-                # carries only lightweight metadata (blocks_path,
-                # parse_format, flags). process_single_document re-reads the
-                # body from full_docs by doc_id.
-                parsed_data_w.pop("content", None)
-                await ctx.q_process.put((doc_id_w, status_doc_w, parsed_data_w))
+                # q_process carries no body: process_single_document re-reads
+                # it from full_docs by doc_id.
+                await ctx.q_process.put((doc_id_w, status_doc_w))
             except PipelineCancelledException:
                 # Cancellation raised from inside the parse engine (future-
                 # proofing — engines don't currently call _raise_if_cancelled,
@@ -1121,11 +1115,10 @@ class _PipelineMixin:
         while True:
             item = await ctx.q_process.get()
             try:
-                doc_id_w, status_doc_w, parsed_data_w = item
+                doc_id_w, status_doc_w = item
                 await self.process_single_document(
                     doc_id=doc_id_w,
                     status_doc=status_doc_w,
-                    parsed_data=parsed_data_w,
                     ctx=ctx,
                 )
             except Exception as e:
@@ -1158,15 +1151,14 @@ class _PipelineMixin:
         *,
         doc_id: str,
         status_doc: DocProcessingStatus,
-        parsed_data: dict[str, Any],
         ctx: _BatchRunContext,
     ) -> None:
         """Single-document state machine: chunking → KG extraction → merge.
 
-        Always invoked from ``_process_worker`` with ``parsed_data`` already
-        populated by ``_parse_worker``.  Drives the
-        PROCESSING → PROCESSED state machine, with FAILED fallbacks at both
-        the extract and merge stage boundaries.
+        Always invoked from ``_process_worker`` once ``_parse_worker`` has stored
+        the parsed body in full_docs. Drives the PROCESSING → PROCESSED state
+        machine, with FAILED fallbacks at both the extract and merge stage
+        boundaries.
         """
         # Dokumen FAILED lama bisa ikut terangkut dalam batch yang sama; progresnya
         # harus mendarat di stream miliknya sendiri, bukan milik dokumen pemicu.

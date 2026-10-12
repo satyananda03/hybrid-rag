@@ -151,3 +151,37 @@ def test_hybrid_search_stays_in_its_workspace_and_runs_a_top_k_scan(pg):
         plan = "\n".join(r[0] for r in pg("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) " + sql, *args))
         assert "TopKScanExecState" in plan 
         assert '"term":{"field":"workspace"' in plan and "heap_filter" not in plan
+
+# --- reranker wiring --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model, host, built",
+    [("rr", "http://rr", True), (None, "http://rr", False), ("rr", None, False)],
+)
+def test_reranker_is_built_from_settings_only_when_fully_configured(model, host, built, monkeypatch):
+    from hybrid_rag import providers
+    from hybrid_rag.retrieval import factory
+
+    calls = []
+    monkeypatch.setitem(providers._hooks, "get_reranker", lambda *a, **kw: calls.append((a, kw)) or "rerank-fn")
+    monkeypatch.setattr(settings, "rerank_model", model)
+    monkeypatch.setattr(settings, "rerank_binding_host", host)
+    monkeypatch.setattr(settings, "rerank_binding_api_key", "rr-key")
+    monkeypatch.setattr(settings, "rerank_timeout", 12.0)
+    monkeypatch.setattr(settings, "max_retries", 4)
+    monkeypatch.setattr(type(settings), "require", lambda self, *roles: None)
+
+    class StubRag:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def initialize_storages(self):
+            pass
+
+    monkeypatch.setattr(factory, "RetrievalRAG", StubRag)
+    monkeypatch.setattr(factory, "build_embedding_func", lambda: object())
+    rag = asyncio.run(factory.build_rag("ws"))
+
+    assert rag.kwargs["rerank_model_func"] == ("rerank-fn" if built else None)
+    assert calls == ([(("rr",), {"base_url": "http://rr", "api_key": "rr-key", "timeout": 12.0, "max_retries": 4})] if built else [])

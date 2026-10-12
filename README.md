@@ -7,7 +7,7 @@ graf), deletion, dan retrieval mode `mix` (graf + vector + BM25, RRF, rerank).
 Package ini tidak meng-import aplikasi host. Host cukup:
 
 1. mengisi `.env` (nama variabel di `hybrid_rag/config.py`, mis. `POSTGRES_*`,
-   `NEO4J_*`, `EMBEDDING_*`, `LLM_*`, `TOP_K`, `CHUNK_TOP_K`, `TEXTRACT_*`,
+   `NEO4J_*`, `EMBEDDING_*`, `EXTRACT_LLM_*`, `CONTEXTUALIZE_LLM_*`, `KEYWORD_LLM_*`, `VLM_*`, `TOP_K`, `CHUNK_TOP_K`, `TEXTRACT_*`,
    `S3_*`: S3 dipakai langsung oleh parser Textract, bukan lewat provider);
 2. memasang provider sekali saat startup;
 3. memakai API publik `hybrid_rag.ingestion` / `hybrid_rag.retrieval`.
@@ -15,10 +15,13 @@ Package ini tidak meng-import aplikasi host. Host cukup:
 ```python
 from hybrid_rag import providers
 
+# Tiga factory dengan argumen koneksi yang sama (diisi library dari .env), semuanya keyword
+# setelah model_id: base_url, api_key, timeout (detik, None = tanpa batas), max_retries (MAX_RETRIES).
+# Retry model dikerjakan klien yang dibangun factory; library tidak menambah retry sendiri.
 providers.configure(
-    get_llm=my_get_llm,                # (model_id, *, max_tokens, base_url, api_key, timeout, temperature) -> LangChain chat model
-    get_embeddings=my_get_embeddings,  # (model_id, base_url, api_key) -> LangChain Embeddings
-    rerank=my_rerank,                  # opsional: (query, documents, top_n=...) -> [{"index", "relevance_score"}]
+    get_llm=my_get_llm,                # (model_id, *, base_url, api_key, timeout, max_retries, max_tokens[, temperature]) -> LangChain chat model
+    get_embeddings=my_get_embeddings,  # (model_id, *, base_url, api_key, timeout, max_retries) -> LangChain Embeddings
+    get_reranker=my_get_reranker,      # opsional: (model_id, *, base_url, api_key, timeout, max_retries) -> async (query, documents, top_n) -> [{"index", "relevance_score"}]
 )
 
 # opsional: progress ingest/delete ke UI. Sink = objek dengan stage(name), skip(name, reason),

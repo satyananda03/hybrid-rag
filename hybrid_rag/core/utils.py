@@ -23,7 +23,6 @@ from typing import (
 )
 import numpy as np
 from pydantic import AfterValidator
-from hybrid_rag.config import settings
 from hybrid_rag.core.constants import (
     GRAPH_FIELD_SEP,
     VALID_SOURCE_IDS_LIMIT_METHODS,
@@ -137,17 +136,6 @@ async def safe_vdb_operation_with_exception(
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
     pass
-
-
-PERFORMANCE_TIMING_LOGS = (
-    settings.performance_timing_logs
-)
-
-
-def performance_timing_log(msg: str, *args, **kwargs):
-    """Emit targeted performance timing logs only when explicitly enabled."""
-    if PERFORMANCE_TIMING_LOGS:
-        logger.info(msg, *args, **kwargs)
 
 
 @dataclass
