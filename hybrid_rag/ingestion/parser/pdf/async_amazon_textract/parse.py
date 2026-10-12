@@ -1,23 +1,11 @@
-"""Orkestrasi PDF → raw JSON Textract mode async: StartDocumentAnalysis + polling GetDocumentAnalysis.
-
-Keluaran ``raw_data`` berbentuk persis sama dengan parser sync
-(``amazon_textract.parse_document_to_json``), jadi ``reconstruct_content_list``
-yang sama dipakai tanpa perubahan. Tanpa SNS/SQS: status job diambil dengan polling.
-
-Coroutine, bukan fungsi blocking: menunggu job memakai ``asyncio.sleep`` sehingga tidak
-menahan thread executor selama job berjalan; hanya panggilan boto/fitz/S3 yang singkat
-yang lewat ``asyncio.to_thread``. Jumlah job bersamaan per proses dibatasi
-``TEXTRACT_MAX_CONCURRENT_JOBS`` (kuota akun: 100 job async bersamaan).
-"""
+"""Orkestrasi PDF → raw JSON Textract mode async: StartDocumentAnalysis + polling GetDocumentAnalysis."""
 import asyncio
 import io
 import os
 import random
 import time
 import uuid
-
 import fitz
-
 from hybrid_rag.config import settings
 import logging
 from hybrid_rag import progress
