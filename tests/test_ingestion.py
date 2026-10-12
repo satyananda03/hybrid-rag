@@ -1,15 +1,11 @@
-"""Ingestion: file routing and parsers, figure hosting, S3, ontology extraction, progress."""
-
 import asyncio
 import json
 from pathlib import Path
-
 import pytest
 from docx import Document
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XlImage
 from PIL import Image
-
 from hybrid_rag import progress
 from hybrid_rag.config import RagSettings, settings
 from hybrid_rag.core.chunk_schema import format_location, normalize_page
@@ -28,13 +24,8 @@ from hybrid_rag.ingestion.parser.spreadsheet.parser import parse_xlsx
 from hybrid_rag.storage.s3 import objects as s3_objects
 from hybrid_rag.storage.s3 import require_bucket, upload_figures_to_s3
 
-
 def images(items):
     return [i for i in items if i["type"] == "image"]
-
-
-# --- sample files ----------------------------------------------------------------
-
 
 @pytest.fixture
 def docx_path(tmp_path, make_png):
@@ -45,7 +36,6 @@ def docx_path(tmp_path, make_png):
     path = tmp_path / "a.docx"
     doc.save(path)
     return path
-
 
 @pytest.fixture
 def xlsx_path(tmp_path, make_png):
@@ -60,87 +50,65 @@ def xlsx_path(tmp_path, make_png):
     wb.save(path)
     return path
 
-
-# --- parsers ----------------------------------------------------------------------
-
-
 def test_docx_keeps_only_large_images(docx_path, tmp_path):
     items = parse_docx(docx_path, tmp_path / "out")
     [image] = images(items)
     assert Image.open(image["img_path"]).size == (900, 900)
     assert {"type": "text", "text": "Pengantar", "page_idx": 0} in items
 
-
 def test_xlsx_keeps_only_large_images_and_uses_the_sheet_as_page(xlsx_path, tmp_path):
     [image] = images(parse_xlsx(xlsx_path, tmp_path / "out"))
     assert Image.open(image["img_path"]).size == (900, 900)
     assert image["page_idx"] == "Rekap"
-
 
 def test_figure_thresholds_come_from_settings(docx_path, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "figure_min_width_px", 0)
     monkeypatch.setattr(settings, "figure_min_height_px", 0)
     assert len(images(parse_docx(docx_path, tmp_path / "out"))) == 2
 
-
-# --- parse_file routing -----------------------------------------------------------
-
-
 def parse(path):
     async def go():
         async with pipeline.parse_file(path) as content_list:
             return content_list
-
     return asyncio.run(go())
-
 
 @pytest.fixture
 def hosted(monkeypatch):
-    """Records every content list ``parse_file`` hands to S3 hosting."""
     calls = []
     monkeypatch.setattr(pipeline, "host_figures", calls.append)
     return calls
-
 
 def test_supported_extensions_follow_the_routing_table():
     assert pipeline.SUPPORTED_INGEST_EXTENSIONS == frozenset(pipeline.PARSERS)
     assert {"pdf", "docx", "xlsx", "md", "txt", "json"} <= pipeline.SUPPORTED_INGEST_EXTENSIONS
     assert not {"pptx", "doc", "odt", "rtf"} & pipeline.SUPPORTED_INGEST_EXTENSIONS
 
-
 @pytest.mark.parametrize("name", ["a.docx", "a.xlsx"])
 def test_office_files_are_parsed_then_hosted(name, docx_path, xlsx_path, hosted):
     content_list = parse({"a.docx": docx_path, "a.xlsx": xlsx_path}[name])
     assert hosted == [content_list] and len(images(content_list)) == 1
 
-
 def test_pdf_goes_through_textract_then_hosting_and_cleans_up(tmp_path, monkeypatch, hosted):
     pdf = tmp_path / "a.pdf"
     pdf.write_bytes(b"%PDF-1.4")
     seen = {}
-
     async def fake_textract(path, output_file):
         seen["path"], seen["tmp_dir"] = path, Path(output_file).parent
         return {"raw": True}
-
     monkeypatch.setattr(pipeline.async_amazon_textract, "parse_document_to_json", fake_textract)
     monkeypatch.setattr(pipeline, "reconstruct_content_list", lambda raw, output_file: [{"type": "text", "text": "isi"}])
-
     async def go():
         async with pipeline.parse_file(pdf) as content_list:
             assert seen["tmp_dir"].exists()  # still there while the caller inserts
             return content_list
-
     assert asyncio.run(go()) == [{"type": "text", "text": "isi"}]
     assert seen["path"] == str(pdf) and len(hosted) == 1
     assert not seen["tmp_dir"].exists()
-
 
 def test_text_and_content_list_files_are_not_hosted(tmp_path, hosted):
     md = tmp_path / "a.md"
     md.write_text("halo", encoding="utf-8")
     assert parse(md) == [{"type": "text", "text": "halo"}]
-
     prebuilt = tmp_path / "a.json"
     prebuilt.write_text(json.dumps([{"type": "image", "img_path": "https://s3/x.jpg"}]), encoding="utf-8")
     assert parse(prebuilt)[0]["img_path"] == "https://s3/x.jpg"
@@ -161,10 +129,6 @@ def test_parse_file_rejects_bad_input(tmp_path):
     with pytest.raises(ValueError, match="array of object"):
         parse(bad)
 
-
-# --- S3 ----------------------------------------------------------------------------
-
-
 class FakeS3Client:
     def __init__(self):
         self.puts = []
@@ -173,7 +137,6 @@ class FakeS3Client:
         if key.endswith("bad.png"):
             raise OSError("boom")
         self.puts.append((bucket, key, ExtraArgs["ContentType"]))
-
 
 def test_figures_get_urls_and_a_failed_upload_keeps_its_local_path(tmp_path, make_png, monkeypatch):
     client = FakeS3Client()
@@ -190,42 +153,32 @@ def test_figures_get_urls_and_a_failed_upload_keeps_its_local_path(tmp_path, mak
     assert items[1]["img_path"] == str(bad)
     assert client.puts == [("bkt", "figs/ok.png", "image/png")]
 
-
 def test_require_bucket_names_the_variable(monkeypatch):
     monkeypatch.setattr(settings, "s3_bucket", None)
     with pytest.raises(ValueError, match="S3_BUCKET"):
         require_bucket()
 
-
-# --- ontology-driven extraction -----------------------------------------------------
-
-
 def node(name, type_, **props):
     return {name: [{"entity_name": name, "entity_type": type_, "properties": props}]}
-
 
 def edge(src, tgt, type_):
     return {(src, tgt): [{"src_id": src, "tgt_id": tgt, "relation_type": type_, "properties": {}}]}
 
-
 def test_ontology_loads_and_renders_for_a_prompt_template():
     schema = load_ontology_schema("hukum")
     assert {n.label for n in schema.node_types} >= {"Peraturan", "Pasal", "Lembaga"}
-    # braces are doubled for ChatPromptTemplate: formatting gives back the plain dump
     assert render_schema_for_prompt(schema).format() == str(schema.model_dump(exclude_none=True))
-
 
 @pytest.mark.parametrize("name", ["../hukum", "nope"])
 def test_unknown_or_unsafe_ontology_names_fail(name):
     with pytest.raises((ValueError, FileNotFoundError)):
         resolve_ontology_path(name)
 
-
 def test_pruning_keeps_the_schema_and_repairs_direction():
     nodes = {
         **node("UU 1/2020", "Peraturan", tahun="2020"),
         **node("Pasal 1", "Pasal"),
-        **node("Kucing", "Hewan"),  # not an ontology type
+        **node("Kucing", "Hewan"), 
     }
     edges = {
         **edge("Pasal 1", "UU 1/2020", "memilikiPasal"),  # reversed: repaired
@@ -236,17 +189,12 @@ def test_pruning_keeps_the_schema_and_repairs_direction():
     assert kept_nodes["UU 1/2020"][0]["properties"] == {"tahun": "2020"}
     assert list(kept_edges) == [("UU 1/2020", "Pasal 1")]
 
-
 def test_chains_are_built_per_ontology(fake_llm):
     default, onto = get_kg_chains(), get_kg_chains("hukum")
     assert default.schema is None and get_kg_chains("") is default
     assert onto.schema is not None
     system = onto.extraction_prompt.messages[0].prompt.template
     assert "Peraturan" in system and "{ontology_schema}" not in system
-
-
-# --- chunk locations -----------------------------------------------------------------
-
 
 def test_location_helpers():
     assert [normalize_page(v) for v in (0, 3, " Rekap ", "", None, True, 1.5)] == [0, 3, "Rekap", None, None, None, None]
@@ -256,35 +204,25 @@ def test_location_helpers():
     assert format_location("Rekap") == 'sheet "Rekap"'
     assert format_location("Rekap", "Detail") == 'sheet "Rekap" – "Detail"'
 
-
 def test_sheet_pages_flow_into_chunk_ranges():
     offsets = page_offsets_of(["isi rekap", "isi detail"], ["Rekap", "Detail"])
     starts = [o["start"] for o in offsets]
     assert _page_range(offsets, starts, (0, len("isi rekap\n\nisi"))) == {"page_start": "Rekap", "page_end": "Detail"}
     assert page_offsets_of(["teks .md"], [None]) == []
 
-
-# --- progress and settings -------------------------------------------------------------
-
-
 class RecordingSink:
     def __init__(self):
         self.events = []
-
     def stage(self, name):
         self.events.append(("stage", name, progress.current_doc_id.get(), progress.current_workspace.get()))
-
     def skip(self, name, reason):
         self.events.append(("skip", name, reason))
-
     def activity(self, message, level="info"):
         self.events.append(("activity", message, level))
-
 
 def test_progress_without_a_sink_is_a_noop():
     progress.set_sink(None)
     progress.stage("parse"), progress.skip("x", "y"), progress.activity("z")
-
 
 def test_progress_sink_receives_events_with_the_library_set_context():
     sink = RecordingSink()
@@ -296,7 +234,6 @@ def test_progress_sink_receives_events_with_the_library_set_context():
             progress.stage("chunk")
             progress.skip("multimodal", "tidak ada gambar")
             progress.activity("menunggu", level="warning")
-
         asyncio.run(run())
     finally:
         progress.set_sink(None)
@@ -305,7 +242,6 @@ def test_progress_sink_receives_events_with_the_library_set_context():
         ("skip", "multimodal", "tidak ada gambar"),
         ("activity", "menunggu", "warning"),
     ]
-
 
 def test_settings_require_names_the_missing_env_vars():
     s = RagSettings(_env_file=None, LLM_BINDING_HOST="h", LLM_BINDING_API_KEY="k")

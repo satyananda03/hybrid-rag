@@ -1,9 +1,5 @@
-"""Retrieval: citations and context assembly, keyword and chunk selection, hybrid BM25 search."""
-
 import asyncio
-
 import pytest
-
 from hybrid_rag.config import settings
 from hybrid_rag.core.base import collection_suffix
 from hybrid_rag.core.namespace import NameSpace
@@ -15,20 +11,12 @@ from hybrid_rag.retrieval.utils import generate_reference_list_from_chunks, pick
 from hybrid_rag.storage.postgres.sql import SQL_TEMPLATES
 from hybrid_rag.storage.postgres.vector import vector_table
 
-
-# --- fakes ---------------------------------------------------------------------------
-
-
 class FakeKV:
-    """A key-value storage that counts its lookups."""
-
     def __init__(self, rows):
         self.rows, self.calls = rows, 0
-
     async def get_by_ids(self, ids):
         self.calls += 1
         return [self.rows.get(i) for i in ids]
-
 
 ROWS = {
     "c1": {"sidecar": {"page_start": 4, "page_end": 4, "parent_id": "p1"}},
@@ -43,10 +31,8 @@ IMAGE_CHUNK = {
     "file_path": "f",
 }
 
-
 def attach(db, **kwargs):
     return asyncio.run(context._attach_sources(CHUNKS, db, limit=None, **kwargs))
-
 
 def build_context(include_citations, chunks=CHUNKS):
     return context._build_context_str(
@@ -54,19 +40,12 @@ def build_context(include_citations, chunks=CHUNKS):
         {}, text_chunks_db=FakeKV(ROWS),
     )
 
-
 class FakeRag:
     def __init__(self, include_citations):
         self.include_citations = include_citations
-
     async def aretrieve(self, query, param):
         text, data = await build_context(self.include_citations, CHUNKS[:2] + [IMAGE_CHUNK])
         return {**data, "context": text}
-
-
-# --- citations ------------------------------------------------------------------------
-
-
 def test_references_are_numbered_per_file_and_location():
     chunks = [
         {"file_path": "a.pdf", "page_start": 6, "page_end": 6},
@@ -85,7 +64,6 @@ def test_references_are_numbered_per_file_and_location():
     ]
     assert [c["reference_id"] for c in out] == ["2", "1", "1", "3", "4", ""]
 
-
 def test_attach_sources_returns_child_or_merged_parent_chunks():
     child = attach(FakeKV(ROWS), return_parent=False, include_citations=True)
     assert [(c["content"], c["page_start"], c["page_end"]) for c in child] == [
@@ -96,12 +74,10 @@ def test_attach_sources_returns_child_or_merged_parent_chunks():
         ("c1", "parent", 4, 5), ("c3", "c3", "Rekap", "Rekap"),
     ]
 
-
 def test_attach_sources_does_no_lookup_without_citations():
     db = FakeKV(ROWS)
     assert attach(db, return_parent=False, include_citations=False) == CHUNKS
     assert db.calls == 0
-
 
 def test_context_includes_citations_only_when_asked():
     text, data = asyncio.run(build_context(True))
@@ -113,19 +89,13 @@ def test_context_includes_citations_only_when_asked():
     assert data["data"]["references"] == []
     assert set(data["data"]["chunks"][0]) == {"content", "file_path", "chunk_id"}
 
-
 def test_images_follow_their_citation():
     result = asyncio.run(_retrieve(FakeRag(True), "q", QueryParam(), include_raw_data=True))
     assert result.images == [{"path": "https://s3/x/fig.jpg?sig=1", "reference_id": "3"}]
     assert '[3] f, sheet "Rekap"' in result.context  # the image's page, via its reference
     assert "image_path" not in result.raw_data["data"]["chunks"][0]
-
     result = asyncio.run(_retrieve(FakeRag(False), "q", QueryParam(), include_raw_data=False))
     assert result.images == [{"path": "https://s3/x/fig.jpg?sig=1"}]
-
-
-# --- query parameters, keywords, chunk selection ---------------------------------------
-
 
 def test_query_param_defaults_come_from_settings():
     param = QueryParam()
@@ -133,33 +103,26 @@ def test_query_param_defaults_come_from_settings():
     assert param.enable_rerank is settings.rerank_by_default
     assert param.include_citations is True and param.return_parent is False
 
-
 @pytest.mark.parametrize(
     "raw, expected",
     [
         (None, []),
-        (5, []),  # neither a string nor a list
-        ("a, b;c\nd", ["a", "b", "c", "d"]),  # a CSV string is split
-        (["x, y", " z ", 3, ""], ["x, y", "z"]),  # list items stay whole; junk is dropped
+        (5, []),  
+        ("a, b;c\nd", ["a", "b", "c", "d"]),  
+        (["x, y", " z ", 3, ""], ["x, y", "z"]), 
     ],
 )
 def test_keyword_payloads_are_normalized(raw, expected):
     assert _normalize_keyword_list(raw, "field") == expected
 
-
 def test_weighted_polling_gives_more_chunks_to_more_important_items():
     items = [{"sorted_chunks": ["a1", "a2", "a3"]}, {"sorted_chunks": ["b1", "b2", "b3"]}]
     assert pick_by_weighted_polling(items, max_related_chunks=3, min_related_chunks=1) == ["a1", "a2", "a3", "b1"]
-
 
 def test_weighted_polling_hands_unused_quota_to_the_next_items():
     items = [{"sorted_chunks": ["a1"]}, {"sorted_chunks": ["b1", "b2", "b3"]}]
     assert pick_by_weighted_polling(items, max_related_chunks=3, min_related_chunks=1) == ["a1", "b1", "b2", "b3"]
     assert pick_by_weighted_polling([], max_related_chunks=3) == []
-
-
-# --- hybrid BM25 search (needs the PostgreSQL from .env: make test-integration) ----------
-
 
 @pytest.mark.integration
 def test_hybrid_search_stays_in_its_workspace_and_runs_a_top_k_scan(pg):
@@ -167,7 +130,6 @@ def test_hybrid_search_stays_in_its_workspace_and_runs_a_top_k_scan(pg):
     suffix = collection_suffix(settings.embedding_model, settings.embedding_dim)
     table = f"{schema}.{vector_table(NameSpace.VECTOR_STORE_CHUNKS, suffix)[0]}"
     sql = SQL_TEMPLATES["chunks_hybrid_bm25"].format(table_name=table, vector_cast="vector")
-
     try:
         samples = pg(
             f"SELECT DISTINCT ON (workspace) workspace, id, content_vector, content_cleaned FROM {table} "
@@ -178,17 +140,14 @@ def test_hybrid_search_stays_in_its_workspace_and_runs_a_top_k_scan(pg):
         pytest.skip(f"{table} is missing or outdated, run `make db-init`: {type(e).__name__}")
     if not samples:
         pytest.skip(f"{table} has no chunks")
-
     for sample in samples:
         workspace = sample["workspace"]
         own_ids = {r["id"] for r in pg(f"SELECT id FROM {table} WHERE workspace = $1", workspace)}
         query = " ".join(sample["content_cleaned"].split()[:2])
         args = (workspace, 1 - settings.cosine_threshold, 30, sample["content_vector"], query, 1.0, 0.8)
-
         rows = pg(sql, *args)
         assert {r["id"] for r in rows} <= own_ids
         assert sample["id"] in {r["id"] for r in rows}
-
         plan = "\n".join(r[0] for r in pg("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) " + sql, *args))
-        assert "TopKScanExecState" in plan  # ParadeDB takes the top 30 itself
-        assert '"term":{"field":"workspace"' in plan and "heap_filter" not in plan  # tenant filter in the index
+        assert "TopKScanExecState" in plan 
+        assert '"term":{"field":"workspace"' in plan and "heap_filter" not in plan

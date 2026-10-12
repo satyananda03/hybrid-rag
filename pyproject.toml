@@ -52,6 +52,6 @@ packages = ["hybrid_rag"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Unit tests by default; the last -m on the command line wins, so `-m integration` selects the others.
+
 addopts = "-ra --strict-markers -m 'not integration'"
 markers = ["integration: needs the live PostgreSQL from .env (read-only queries); run with `make test-integration`"]
