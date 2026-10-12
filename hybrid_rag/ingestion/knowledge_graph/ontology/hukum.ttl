@@ -1,0 +1,110 @@
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix hukum: <http://example.org/hukum-indonesia#> .
+
+# ==========================================
+# METADATA ONTOLOGI
+# ==========================================
+hukum:OntologyHukumIndonesia a owl:Ontology ;
+    rdfs:label "Ontologi Hukum Indonesia untuk GraphRAG" ;
+    rdfs:comment "Skema yang merepresentasikan hierarki, relasi, dan atribut peraturan perundang-undangan di Indonesia." .
+
+# ==========================================
+# 1. CLASSES (Entitas yang boleh diekstrak LLM)
+# ==========================================
+hukum:Peraturan a owl:Class ;
+    rdfs:label "Peraturan Perundang-undangan" ;
+    rdfs:comment "Peraturan perundang-undangan yang bernomor: UUD 1945, UU, Perppu, PP, Perpres, Permen, Perda. Ekstrak setiap peraturan yang disebut, termasuk yang hanya dirujuk di konsiderans Menimbang/Mengingat. Nama selalu dalam bentuk resmi 'Jenis Nomor N Tahun YYYY' tanpa judul 'tentang ...', misal 'Peraturan Presiden Nomor 37 Tahun 2026', 'Undang-Undang Nomor 24 Tahun 2019', 'Undang-Undang Dasar Negara Republik Indonesia Tahun 1945'. 'Peraturan Presiden ini' berarti peraturan yang sedang dibahas teks. Dokumen rencana atau program (RPJMN, RPJPN, rencana induk, lampiran) bukan Peraturan." .
+
+hukum:Pasal a owl:Class ;
+    rdfs:label "Pasal" ;
+    rdfs:comment "Pasal bernomor dalam sebuah peraturan; ekstrak setiap pasal sebagai entitas tersendiri, tanpa memecahnya per ayat. Bila teks menyebut peraturan induknya, nama menyertakan peraturan itu dalam bentuk resmi, misal 'Pasal 25 Undang-Undang Nomor 24 Tahun 2019'. Bila tidak (pasal dari peraturan yang sedang dibahas), nama hanya 'Pasal N', misal 'Pasal 10'. Lampiran, bab, dan bagian bukan Pasal." .
+
+hukum:Lembaga a owl:Class ;
+    rdfs:label "Lembaga Negara" ;
+    rdfs:comment "Lembaga atau jabatan pemerintahan Indonesia yang menetapkan, melaksanakan, atau ditugaskan oleh peraturan (misal: Presiden, DPR, Menteri, Kementerian Ekonomi Kreatif, Pemerintah Daerah, Gubernur). Bukan negara asing, perusahaan, komunitas, atau kelompok masyarakat." .
+
+hukum:TopikHukum a owl:Class ;
+    rdfs:label "Topik Hukum" ;
+    rdfs:comment "Subjek atau materi pokok yang diatur oleh peraturan atau pasal (misal: Ekonomi Kreatif, Rencana Induk Ekonomi Kreatif, Kekayaan Intelektual, Pendanaan Ekonomi Kreatif). Hanya topik yang menjadi materi pengaturan; bukan nama daerah, angka, target, teknologi, atau istilah umum yang sekadar disebut." .
+
+hukum:Sanksi a owl:Class ;
+    rdfs:label "Sanksi" ;
+    rdfs:comment "Hukuman pidana, perdata, atau administratif (misal: Penjara 5 tahun, Denda)." .
+
+# ==========================================
+# 2. OBJECT PROPERTIES (Relasi antar Entitas)
+# ==========================================
+hukum:memilikiPasal a owl:ObjectProperty ;
+    rdfs:domain hukum:Peraturan ;
+    rdfs:range hukum:Pasal ;
+    rdfs:label "memiliki pasal" ;
+    rdfs:comment "Peraturan memuat pasal tersebut (arah: Peraturan -> Pasal)." .
+
+hukum:ditetapkanOleh a owl:ObjectProperty ;
+    rdfs:domain hukum:Peraturan ;
+    rdfs:range hukum:Lembaga ;
+    rdfs:label "ditetapkan oleh" ;
+    rdfs:comment "Peraturan ditetapkan, dibentuk, atau disahkan oleh lembaga tersebut (arah: Peraturan -> Lembaga)." .
+
+hukum:mencabut a owl:ObjectProperty ;
+    rdfs:domain hukum:Peraturan ;
+    rdfs:range hukum:Peraturan ;
+    rdfs:label "mencabut atau membatalkan peraturan sebelumnya" ;
+    rdfs:comment "Peraturan mencabut atau menyatakan tidak berlaku peraturan sebelumnya (arah: Peraturan baru -> Peraturan lama)." .
+
+hukum:mengubah a owl:ObjectProperty ;
+    rdfs:domain hukum:Peraturan ;
+    rdfs:range hukum:Peraturan ;
+    rdfs:label "merevisi atau mengubah sebagian isi peraturan lain" ;
+    rdfs:comment "Peraturan merevisi atau mengubah sebagian isi peraturan lain (arah: Peraturan baru -> Peraturan yang diubah)." .
+
+hukum:mengaturTentang a owl:ObjectProperty ;
+    rdfs:domain hukum:Peraturan , hukum:Pasal ;
+    rdfs:range hukum:TopikHukum ;
+    rdfs:label "mengatur tentang" ;
+    rdfs:comment "Peraturan atau pasal mengatur topik hukum tersebut (arah: Peraturan/Pasal -> TopikHukum)." .
+
+hukum:mengandungSanksi a owl:ObjectProperty ;
+    rdfs:domain hukum:Pasal ;
+    rdfs:range hukum:Sanksi ;
+    rdfs:label "pasal yang memberikan sanksi tertentu" ;
+    rdfs:comment "Pasal menetapkan sanksi tersebut (arah: Pasal -> Sanksi)." .
+
+# ==========================================
+# 3. DATA PROPERTIES (Atribut/Properties Entitas)
+# ==========================================
+hukum:nomorPeraturan a owl:DatatypeProperty ;
+    rdfs:domain hukum:Peraturan ;
+    rdfs:range xsd:string ;
+    rdfs:label "nomor peraturan (misal: '11', '1')" ;
+    rdfs:comment "Nomor peraturan, misal '37'." .
+
+hukum:tahun a owl:DatatypeProperty ;
+    rdfs:domain hukum:Peraturan ;
+    rdfs:range xsd:integer ;
+    rdfs:label "tahun peraturan disahkan (misal: 2008, 2024)" ;
+    rdfs:comment "Tahun peraturan ditetapkan, misal '2026'." .
+
+hukum:statusBerlaku a owl:DatatypeProperty ;
+    rdfs:domain hukum:Peraturan ;
+    rdfs:range xsd:string ;
+    rdfs:label "status (misal: 'Berlaku', 'Dicabut', 'Diubah')" ;
+    rdfs:comment "Status peraturan: 'Berlaku', 'Dicabut', atau 'Diubah', hanya jika disebut di teks." .
+
+hukum:isiTeks a owl:DatatypeProperty ;
+    rdfs:domain hukum:Pasal ;
+    rdfs:range xsd:string ;
+    rdfs:label "teks lengkap atau bunyi pasal" ;
+    rdfs:comment "Ringkasan isi atau bunyi pasal." .
+
+# `name` on the classes that have other properties: a class with DatatypeProperties
+# keeps only the properties it declares, so without it an entity whose other
+# properties are not stated in the text would be dropped (NO_PROPERTY_LEFT).
+hukum:name a owl:DatatypeProperty ;
+    rdfs:domain hukum:Peraturan , hukum:Pasal ;
+    rdfs:range xsd:string ;
+    rdfs:label "nama" ;
+    rdfs:comment "Nama entitas." .

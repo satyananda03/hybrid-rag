@@ -1,0 +1,20 @@
+__pycache__/
+.venv/
+*.egg-info/
+dist/
+.pytest_cache/
+
+# dashboard
+dashboard/node_modules/
+dashboard/.env.local
+# built by `bun run build`, bundled into the wheel
+hybrid_rag/dashboard/static/
+
+# secrets
+.env
+
+# notebook sample data and outputs
+notebooks/test1.*
+notebooks/hasil_parsing_full.*
+notebooks/output.json
+notebooks/extracted_images/

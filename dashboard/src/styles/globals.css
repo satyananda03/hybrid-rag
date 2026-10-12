@@ -1,0 +1,197 @@
+@import 'tailwindcss';
+@config '../../tailwind.config.js';
+
+@layer base {
+  :root {
+    /* ICCN Brand Colors — extracted from mockup */
+    --color-iccn-red: #e72c0e;
+    --color-iccn-red-dim: rgba(231, 44, 14, 0.4);
+    --color-iccn-orange: #e72c0e;
+    --color-iccn-red-light: #fca5a5;
+
+    /* Surface & Background */
+    --color-bg-base: #0e0e0f;
+    --color-bg-card: rgba(255, 255, 255, 0.08);
+    --color-border-card: rgba(255, 255, 255, 0.1);
+    --color-border-subtle: rgba(255, 255, 255, 0.05);
+
+    /* Text */
+    --color-text-primary: #ffffff;
+    --color-text-secondary: #a1a1aa;
+    --color-text-muted: #6b7280;
+
+    /* Status */
+    --color-status-success: #00e383;
+    --color-status-warning: #f97316;
+    --color-status-error: #ef4444;
+
+    /* Font Family */
+    --font-mono: 'JetBrains Mono', monospace;
+    --font-headline: 'JetBrains Mono', monospace;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-on-surface font-body text-body-md min-h-screen antialiased;
+    font-family: 'JetBrains Mono', monospace;
+    background-color: var(--color-bg-base);
+    color: var(--color-text-primary);
+    background-image:
+      radial-gradient(circle at 15% 50%, rgba(231, 44, 14, 0.05) 0%, transparent 50%),
+      radial-gradient(circle at 85% 30%, rgba(231, 44, 14, 0.05) 0%, transparent 50%),
+      url('/assets/core/background.png');
+    background-size: cover;
+    background-attachment: fixed;
+    background-position: center;
+  }
+}
+
+@layer components {
+  /* Dashboard Card — glassmorphism style from mockup */
+  .dashboard-card {
+    background-color: var(--color-bg-card);
+    border: 1px solid var(--color-border-card);
+    border-radius: 12px;
+    backdrop-filter: blur(10px);
+  }
+
+  /* Chart utilities */
+  .chart-line {
+    fill: none;
+    stroke: var(--color-iccn-red);
+    stroke-width: 2;
+  }
+
+  .chart-point {
+    fill: var(--color-iccn-red);
+  }
+
+  .markdown-content {
+    overflow-wrap: anywhere;
+  }
+
+  .markdown-content > :not(:first-child) {
+    margin-top: 0.75rem;
+  }
+
+  .markdown-content :is(h1, h2, h3) {
+    font-weight: 700;
+    line-height: 1.25;
+  }
+
+  .markdown-content :is(ul, ol) {
+    padding-left: 1.25rem;
+  }
+
+  .markdown-content ul {
+    list-style: disc;
+  }
+
+  .markdown-content ol {
+    list-style: decimal;
+  }
+
+  .markdown-content a {
+    color: #2563eb;
+    text-decoration: underline;
+  }
+
+  .markdown-content pre {
+    overflow-x: auto;
+    border-radius: 0.375rem;
+    background: #e2e8f0;
+    padding: 0.75rem;
+  }
+
+  .markdown-content code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .markdown-content :not(pre) > code {
+    border-radius: 0.25rem;
+    background: #e2e8f0;
+    padding: 0.1rem 0.25rem;
+  }
+
+  .markdown-content table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+  }
+
+  .markdown-content :is(th, td) {
+    border: 1px solid #cbd5e1;
+    padding: 0.375rem 0.5rem;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .markdown-content th {
+    background: #e2e8f0;
+    font-weight: 600;
+  }
+}
+
+@layer utilities {
+  .glow-primary {
+    box-shadow: 0 0 12px rgba(231, 44, 14, 0.3);
+  }
+
+  .glow-text-primary {
+    text-shadow: 0 0 12px rgba(231, 44, 14, 0.3);
+  }
+
+  .glow-status-ingested {
+    box-shadow: 0 0 12px rgba(0, 227, 131, 0.3);
+  }
+
+  .box-glow {
+    box-shadow: 0 0 20px rgba(231, 44, 14, 0.15);
+  }
+
+  .text-glow {
+    text-shadow: 0 0 12px rgba(231, 44, 14, 0.5);
+  }
+
+  .glow-icon {
+    box-shadow: 0 0 15px var(--color-iccn-red-dim);
+  }
+
+  .table-row-hover:hover {
+    background-color: rgba(28, 28, 28, 0.5);
+  }
+
+  @keyframes spin-glow {
+    0% {
+      transform: rotate(0deg);
+      filter: drop-shadow(0 0 8px rgba(231, 44, 14, 0.8));
+    }
+    50% {
+      filter: drop-shadow(0 0 16px rgba(231, 44, 14, 1));
+    }
+    100% {
+      transform: rotate(360deg);
+      filter: drop-shadow(0 0 8px rgba(231, 44, 14, 0.8));
+    }
+  }
+
+  .animate-spin-glow {
+    animation: spin-glow 1.5s linear infinite;
+  }
+
+  @keyframes indeterminate {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(250%);
+    }
+  }
+
+  .animate-indeterminate {
+    animation: indeterminate 1.5s ease-in-out infinite;
+  }
+}
