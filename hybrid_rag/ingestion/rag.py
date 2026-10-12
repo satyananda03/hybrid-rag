@@ -11,7 +11,6 @@ from typing import (
     Optional,
 )
 
-
 from hybrid_rag.storage.shared import (
     get_default_workspace,
     set_default_workspace,

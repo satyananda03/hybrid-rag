@@ -1,6 +1,6 @@
 """Settings the package reads, from the environment and ``.env``."""
 from typing import Optional
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 NOVA_MODELS: frozenset[str] = frozenset({"mjai.nova-2-lite-v1:0"})
@@ -83,10 +83,12 @@ class RagSettings(BaseSettings):
     textract_secret_access_key: Optional[str] = Field(default=None, validation_alias="TEXTRACT_SECRET_ACCESS_KEY")
     textract_region: Optional[str] = Field(default=None, validation_alias="TEXTRACT_REGION")
     textract_max_concurrent_jobs: int = Field(default=50, validation_alias="TEXTRACT_MAX_CONCURRENT_JOBS")
-    max_parallel_office_convert: int = Field(default=2, validation_alias="MAX_PARALLEL_OFFICE_CONVERT")
-    unoserver_host: str = Field(default="unoserver", validation_alias="UNOSERVER_HOST")
-    unoserver_port: int = Field(default=2003, validation_alias="UNOSERVER_PORT")
-    office_convert_timeout: int = Field(default=120, validation_alias="OFFICE_CONVERT_TIMEOUT")
+    figure_min_width_px: int = Field(default=500, validation_alias="FIGURE_MIN_WIDTH_PX")
+    figure_min_height_px: int = Field(default=500, validation_alias="FIGURE_MIN_HEIGHT_PX")
+    figure_min_area_ratio: float = Field(default=0.01, validation_alias="FIGURE_MIN_AREA_RATIO")
+    s3_bucket: Optional[str] = Field(default=None, validation_alias="S3_BUCKET")
+    s3_access_key_id: Optional[str] = Field(default=None, validation_alias="S3_ACCESS_KEY_ID")
+    s3_secret_access_key: Optional[str] = Field(default=None, validation_alias="S3_SECRET_ACCESS_KEY")
     s3_region: Optional[str] = Field(default=None, validation_alias="S3_REGION")
     s3_prefix: str = Field(default="pdf-extractions", validation_alias="S3_PREFIX")
     postgres_host: str = Field(default="localhost", validation_alias="POSTGRES_HOST")

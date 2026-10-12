@@ -1,24 +1,13 @@
-import os
-import json
 from pathlib import Path
 from docx import Document
 from docx.oxml.ns import qn
 from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph
 from unstructured.partition.docx import partition_docx
-from unstructured.documents.elements import Table as UnstructuredTable, Image as UnstructuredImage
+from unstructured.documents.elements import Table as UnstructuredTable
 from html_table_rescuer import TableParser
 
-
-# ============================================================
-# KONFIGURASI
-# ============================================================
-DOCX_PATH = "test1.docx"
-IMAGE_OUTPUT_DIR = "./docx_images"
-OUTPUT_JSON = "output.json"
-
-os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
-
+from hybrid_rag.ingestion.parser.figures import is_large_image
 
 # ============================================================
 # NAMESPACE
@@ -26,7 +15,6 @@ os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
-
 
 # ============================================================
 # FOOTNOTE / ENDNOTE
@@ -67,7 +55,6 @@ def get_endnotes_map(doc):
     except Exception:
         pass
     return endnotes
-
 
 def extract_footnote_refs(paragraph):
     refs = []
@@ -115,6 +102,8 @@ def extract_images_from_paragraph(paragraph, doc, img_dir):
                 image_part = doc.part.related_parts[rId]
                 ext = image_part.partname.ext
                 filename = f"img_{rId}.{ext}"
+                if not is_large_image(image_part.blob, filename):
+                    continue
                 path = Path(img_dir) / filename
                 path.write_bytes(image_part.blob)
                 images.append({"img_path": str(path.resolve()), "rId": rId})
@@ -187,7 +176,7 @@ def iter_block_items(doc):
             yield DocxTable(child, doc)
 
 
-def classify_block(block, doc):
+def classify_block(block, doc, images_dir):
     """Klasifikasikan satu block menjadi tuple (type, payload).
 
     Type:
@@ -205,7 +194,7 @@ def classify_block(block, doc):
         return ("empty", None)
 
     # 1. Gambar
-    imgs = extract_images_from_paragraph(block, doc, IMAGE_OUTPUT_DIR)
+    imgs = extract_images_from_paragraph(block, doc, images_dir)
     if imgs:
         return ("image", imgs)
 
@@ -302,18 +291,22 @@ def build_unstructured_table_map(elements):
 
 
 # ============================================================
-# MAIN
+# PARSE
 # ============================================================
-def main():
-    doc = Document(DOCX_PATH)
+def parse_docx(path: str | Path, images_dir: str | Path) -> list[dict]:
+    """A .docx file → content list (text / image / table / equation).
+
+    Embedded images are written to ``images_dir`` and returned as ``image`` items
+    with a local ``img_path``; images under the ``FIGURE_MIN_*`` thresholds are
+    skipped. Hosting them (S3) is the caller's job. ``page_idx`` counts explicit
+    page breaks, since a .docx has no fixed pagination.
+    """
+    path = str(path)
+    Path(images_dir).mkdir(parents=True, exist_ok=True)
+    doc = Document(path)
 
     # 1. Unstructured untuk tabel HTML
-    us_elements = partition_docx(
-        filename=DOCX_PATH,
-        infer_table_structure=True,
-        extract_images=True,
-        image_output_dir_path=IMAGE_OUTPUT_DIR,
-    )
+    us_elements = partition_docx(filename=path, infer_table_structure=True)
     us_table_html_map = build_unstructured_table_map(us_elements)
 
     # 2. Footnote & endnote
@@ -322,7 +315,7 @@ def main():
 
     # 3. Klasifikasi semua block
     blocks = list(iter_block_items(doc))
-    classified = [classify_block(b, doc) for b in blocks]
+    classified = [classify_block(b, doc, images_dir) for b in blocks]
 
     # 4. Iterasi
     output = []
@@ -403,13 +396,4 @@ def main():
 
         # ----- EMPTY: skip -----
 
-    # 5. Tulis output
-    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
-
-    print(f"Selesai: {OUTPUT_JSON} ({len(output)} elemen)")
-    print(f"Gambar disimpan di: {Path(IMAGE_OUTPUT_DIR).resolve()}")
-
-
-if __name__ == "__main__":
-    main()
+    return output

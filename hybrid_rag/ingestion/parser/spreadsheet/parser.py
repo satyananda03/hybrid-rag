@@ -1,16 +1,15 @@
 import os
 import tempfile
-import json
 from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from unstructured.partition.xlsx import partition_xlsx
 from unstructured.documents.elements import Table
 from html_table_rescuer import TableParser
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
-filename = "test1.xlsx"
-OUTPUT_JSON = "hasil_parsing_full.json"
+from hybrid_rag.ingestion.parser.figures import is_large_image
+
 
 
 # ============================================================
@@ -109,11 +108,14 @@ def html_table_to_markdown(html: str, strategy: str = "fill_dito") -> str | None
 # ============================================================
 # 1. EKSTRAKSI GAMBAR & HYPERLINK DENGAN POSISI BARIS
 # ============================================================
-def extract_sheet_assets(filepath):
-    """Return {sheet_name: {"images": [...], "hyperlinks": [...]}} dengan row/col."""
+def extract_sheet_assets(filepath, images_dir):
+    """Return {sheet_name: {"images": [...], "hyperlinks": [...]}} dengan row/col.
+
+    Gambar di bawah ambang ``FIGURE_MIN_*`` dilewati: tidak ditulis ke ``images_dir``.
+    """
     wb = load_workbook(filepath, data_only=False)
-    img_dir = Path("extracted_images")
-    img_dir.mkdir(exist_ok=True)
+    img_dir = Path(images_dir)
+    img_dir.mkdir(parents=True, exist_ok=True)
     result = {}
 
     for ws in wb.worksheets:
@@ -130,6 +132,8 @@ def extract_sheet_assets(filepath):
                 if getattr(img, "format", None):
                     ext = img.format.lower()
                 img_filename = f"{ws.title.replace(' ', '_')}_r{row}c{col}.{ext}"
+                if not is_large_image(img_data, img_filename):
+                    continue
                 img_path = img_dir / img_filename
                 img_path.write_bytes(img_data)
 
@@ -209,141 +213,139 @@ def element_end_row(el, start_row):
 
 
 # ============================================================
-# 3. MAIN
+# 3. PARSE
 # ============================================================
-assets = extract_sheet_assets(filename)
+def parse_xlsx(path: str | Path, images_dir: str | Path) -> list[dict]:
+    """A .xlsx file → content list (text / table / image), sheet by sheet.
 
-wb = load_workbook(filename, data_only=True)
-sheet_names = wb.sheetnames
+    ``page_idx`` is the sheet name. Embedded images are written to ``images_dir`` and
+    returned as ``image`` items with a local ``img_path``; images under the
+    ``FIGURE_MIN_*`` thresholds are skipped. Hosting them (S3) is the caller's job.
+    """
+    path = str(path)
+    assets = extract_sheet_assets(path, images_dir)
 
-output = []
+    wb = load_workbook(path, data_only=True)
+    sheet_names = wb.sheetnames
 
-for sheet_name in sheet_names:
-    elements = partition_single_sheet(filename, sheet_name)
+    output = []
 
-    ws = wb[sheet_name]
-    sheet_assets = assets.get(sheet_name, {"images": [], "hyperlinks": []})
+    for sheet_name in sheet_names:
+        elements = partition_single_sheet(path, sheet_name)
 
-    # Gabung semua aset, urutkan berdasarkan (row, col)
-    all_assets = []
-    for img in sheet_assets["images"]:
-        if "error" in img:
-            continue
-        all_assets.append({
-            "type": "image",
-            "row": img["row"],
-            "col": img["col"],
-            "cell": img["cell"],
-            "path": str(Path(img["path"]).resolve()),
-            "label": img.get("label"),
-        })
-    for link in sheet_assets["hyperlinks"]:
-        all_assets.append({
-            "type": "link",
-            "row": link["row"],
-            "col": link["col"],
-            "cell": link["cell"],
-            "target": link["target"],
-            "text": link["text"],
-            "tooltip": link.get("tooltip"),
-        })
-    all_assets.sort(key=lambda x: (x["row"], x["col"]))
+        ws = wb[sheet_name]
+        sheet_assets = assets.get(sheet_name, {"images": [], "hyperlinks": []})
 
-    # DEDUP: URL yang sudah dirender sebagai aset
-    asset_urls = set()
-    for link in sheet_assets["hyperlinks"]:
-        if link.get("target"):
-            asset_urls.add(link["target"].strip())
-        if link.get("text"):
-            asset_urls.add(link["text"].strip())
-
-    def is_asset_url(text: str) -> bool:
-        if not text:
-            return False
-        return text.strip() in asset_urls
-
-    # Tentukan rentang baris setiap elemen
-    element_spans = []
-    cursor = 1
-    for el in elements:
-        start = element_start_row(ws, el.text, cursor)
-        end = element_end_row(el, start)
-        element_spans.append((start, end))
-        cursor = end + 1
-
-    emitted = set()
-
-    def emit_assets_until(max_row):
-        """Emit aset yang row-nya <= max_row dan belum pernah di-emit."""
-        for a in all_assets:
-            key = (a["row"], a["col"], a["type"])
-            if key in emitted:
+        # Gabung semua aset, urutkan berdasarkan (row, col)
+        all_assets = []
+        for img in sheet_assets["images"]:
+            if "error" in img:
                 continue
-            if a["row"] <= max_row:
-                if a["type"] == "image":
-                    output.append({
-                        "type": "image",
-                        "img_path": a["path"],
-                        "image_caption": [],
-                        "image_footnote": [],
-                        "page_idx": sheet_name,
-                    })
-                elif a["type"] == "link":
-                    # ✅ Link ditulis sebagai text block
-                    link_text = (a["text"] or "").strip()
-                    target = (a["target"] or "").strip()
-                    if link_text and target and link_text != target:
-                        text_value = f"{link_text} ({target})"
-                    else:
-                        text_value = target or link_text
-                    if text_value:
+            all_assets.append({
+                "type": "image",
+                "row": img["row"],
+                "col": img["col"],
+                "cell": img["cell"],
+                "path": str(Path(img["path"]).resolve()),
+                "label": img.get("label"),
+            })
+        for link in sheet_assets["hyperlinks"]:
+            all_assets.append({
+                "type": "link",
+                "row": link["row"],
+                "col": link["col"],
+                "cell": link["cell"],
+                "target": link["target"],
+                "text": link["text"],
+                "tooltip": link.get("tooltip"),
+            })
+        all_assets.sort(key=lambda x: (x["row"], x["col"]))
+
+        # DEDUP: URL yang sudah dirender sebagai aset
+        asset_urls = set()
+        for link in sheet_assets["hyperlinks"]:
+            if link.get("target"):
+                asset_urls.add(link["target"].strip())
+            if link.get("text"):
+                asset_urls.add(link["text"].strip())
+
+        def is_asset_url(text: str) -> bool:
+            if not text:
+                return False
+            return text.strip() in asset_urls
+
+        # Tentukan rentang baris setiap elemen
+        element_spans = []
+        cursor = 1
+        for el in elements:
+            start = element_start_row(ws, el.text, cursor)
+            end = element_end_row(el, start)
+            element_spans.append((start, end))
+            cursor = end + 1
+
+        emitted = set()
+
+        def emit_assets_until(max_row):
+            """Emit aset yang row-nya <= max_row dan belum pernah di-emit."""
+            for a in all_assets:
+                key = (a["row"], a["col"], a["type"])
+                if key in emitted:
+                    continue
+                if a["row"] <= max_row:
+                    if a["type"] == "image":
                         output.append({
-                            "type": "text",
-                            "text": text_value,
+                            "type": "image",
+                            "img_path": a["path"],
+                            "image_caption": [],
+                            "image_footnote": [],
                             "page_idx": sheet_name,
                         })
-                emitted.add(key)
+                    elif a["type"] == "link":
+                        # ✅ Link ditulis sebagai text block
+                        link_text = (a["text"] or "").strip()
+                        target = (a["target"] or "").strip()
+                        if link_text and target and link_text != target:
+                            text_value = f"{link_text} ({target})"
+                        else:
+                            text_value = target or link_text
+                        if text_value:
+                            output.append({
+                                "type": "text",
+                                "text": text_value,
+                                "page_idx": sheet_name,
+                            })
+                    emitted.add(key)
 
-    for idx, el in enumerate(elements):
-        start_row, end_row = element_spans[idx]
-        emit_assets_until(end_row)
+        for idx, el in enumerate(elements):
+            start_row, end_row = element_spans[idx]
+            emit_assets_until(end_row)
 
-        # SKIP: elemen non-Table yang teksnya adalah URL aset
-        if not isinstance(el, Table) and is_asset_url(el.text):
-            continue
+            # SKIP: elemen non-Table yang teksnya adalah URL aset
+            if not isinstance(el, Table) and is_asset_url(el.text):
+                continue
 
-        if isinstance(el, Table):
-            html = getattr(el.metadata, "text_as_html", None)
-            md_table = html_table_to_markdown(html) if html else None
+            if isinstance(el, Table):
+                html = getattr(el.metadata, "text_as_html", None)
+                md_table = html_table_to_markdown(html) if html else None
 
-            table_body = md_table if md_table else (html or "")
-            output.append({
-                "type": "table",
-                "table_body": table_body,
-                "table_caption": [],
-                "table_footnote": [],
-                "page_idx": sheet_name,
-            })
-        else:
-            text = (el.text or "").strip()
-            if text:
+                table_body = md_table if md_table else (html or "")
                 output.append({
-                    "type": "text",
-                    "text": text,
+                    "type": "table",
+                    "table_body": table_body,
+                    "table_caption": [],
+                    "table_footnote": [],
                     "page_idx": sheet_name,
                 })
+            else:
+                text = (el.text or "").strip()
+                if text:
+                    output.append({
+                        "type": "text",
+                        "text": text,
+                        "page_idx": sheet_name,
+                    })
 
-    # Sisa aset yang row-nya setelah elemen terakhir
-    emit_assets_until(10**9)
+        # Sisa aset yang row-nya setelah elemen terakhir
+        emit_assets_until(10**9)
 
-
-# ============================================================
-# 4. SIMPAN JSON
-# ============================================================
-output_path = Path(OUTPUT_JSON)
-with open(output_path, "w", encoding="utf-8") as f:
-    json.dump(output, f, ensure_ascii=False, indent=2)
-
-print(f"Selesai: {output_path.resolve()}")
-print(f"Total elemen: {len(output)}")
-print(f"Gambar disimpan di: {Path('extracted_images').resolve()}")
+    return output

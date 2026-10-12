@@ -24,8 +24,6 @@ ingestion = [
     "langchain-text-splitters>=0.3,<2",
     "pillow>=10.1.0",
     "pymupdf>=1.28.0",
-    # the `unoconvert` client; the server is ghcr.io/unoconv/unoserver-docker
-    "unoserver==3.4",
     "html-table-rescuer>=0.3.1",
     "unstructured[docx,xlsx]>=0.27.25",
     # ontology-driven KG extraction (knowledge_graph/ontology_schema.py)

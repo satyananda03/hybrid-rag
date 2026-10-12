@@ -22,7 +22,7 @@ from typing import (
 import numpy as np
 
 
-from hybrid_rag.storage.postgres.bm25_text import preprocess_indonesian_fast
+from hybrid_rag.storage.postgres.bm25 import preprocess_indonesian_fast
 from hybrid_rag.core.base import BaseVectorStorage
 from hybrid_rag.core.namespace import NameSpace, is_namespace
 from hybrid_rag.core.utils import (

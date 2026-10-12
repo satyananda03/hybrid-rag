@@ -18,8 +18,8 @@ import logging
 from hybrid_rag.config import settings
 from hybrid_rag.core.base import collection_suffix
 from hybrid_rag.core.namespace import NameSpace
-from hybrid_rag.storage import neo4j
-from hybrid_rag.storage.neo4j_driver import close_neo4j_driver
+from hybrid_rag.storage.neo4j import create_schema
+from hybrid_rag.storage.neo4j.connection import close_neo4j_driver
 from hybrid_rag.storage.postgres.connection import PostgreSQLDB, _pool_config
 from hybrid_rag.storage.postgres.vector import PGVectorStorage, vector_table
 
@@ -47,7 +47,7 @@ async def init_schema() -> None:
         await db.pool.close()
 
     try:
-        await neo4j.create_schema()
+        await create_schema()
     finally:
         await close_neo4j_driver()
     logger.info("db-init: done")

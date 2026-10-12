@@ -1,27 +1,17 @@
-"""Neo4j graph storage: every workspace in one graph, isolated by a ``workspace`` property.
-
-Each entity is a ``HybridRagEntity`` node keyed by ``(workspace, entity_id)``; one
-composite uniqueness constraint backs every lookup, so the schema stays the same size
-however many workspaces exist. Relationships are only ever created between two nodes
-matched in the same workspace, so traversals cannot leave it. The workspace is always a
-query parameter, never part of the Cypher text.
-"""
-
+"""Neo4j graph storage: every workspace in one graph, isolated by a ``workspace`` property."""
 import logging
 import re
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, ClassVar
-
 from neo4j import AsyncManagedTransaction  # type: ignore
 from neo4j import exceptions as neo4jExceptions  # type: ignore
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
-
 from hybrid_rag.config import settings
 from hybrid_rag.core.base import BaseGraphStorage
 from hybrid_rag.core.types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
 from hybrid_rag.core.utils import validate_workspace
-from hybrid_rag.storage.neo4j_driver import get_neo4j_driver
+from hybrid_rag.storage.neo4j.connection import get_neo4j_driver
 from hybrid_rag.storage.shared import get_data_init_lock
 
 logger = logging.getLogger(__name__)
@@ -30,11 +20,7 @@ logging.getLogger("neo4j").setLevel(logging.ERROR)
 LABEL = "HybridRagEntity"
 KEY_CONSTRAINT = "hybrid_rag_entity_key"
 FULLTEXT_INDEX = "hybrid_rag_entity_id_fulltext"
-#: A node of this workspace. Bound as ``$workspace``; ``entity_id IS NOT NULL`` (true for
-#: every node — upserts require it) lets a workspace-wide scan seek the key constraint's
-#: index instead of scanning the label across all workspaces.
 WS_NODE = f"(n:{LABEL} {{workspace: $workspace}}) WHERE n.entity_id IS NOT NULL"
-#: Keys every edge dict carries; missing ones are filled with these values.
 DEFAULT_EDGE = {"weight": 1.0, "source_id": None, "description": None, "keywords": None}
 
 READ_RETRY = retry(
@@ -63,7 +49,6 @@ WRITE_RETRY = retry(
         OSError,
     )),
 )
-
 
 async def create_schema() -> None:
     """The key constraint and full-text index, global rather than per workspace.
@@ -116,7 +101,7 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def initialize(self):
         async with get_data_init_lock():
-            # One driver for every workspace (neo4j_driver.py); never build one here.
+            # One driver for every workspace (connection.py); never build one here.
             self._driver = get_neo4j_driver()
             self._DATABASE = settings.neo4j_database or None
 
@@ -124,7 +109,7 @@ class Neo4JStorage(BaseGraphStorage):
         """Drop this instance's reference to the shared driver.
 
         The driver itself is closed once at shutdown by
-        ``hybrid_rag.storage.neo4j_driver.close_neo4j_driver``: one finished
+        ``hybrid_rag.storage.neo4j.connection.close_neo4j_driver``: one finished
         instance must not cut the connection of every other workspace.
         """
         self._driver = None

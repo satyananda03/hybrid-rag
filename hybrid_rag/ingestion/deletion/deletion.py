@@ -28,7 +28,7 @@ from hybrid_rag.core.utils import (
     subtract_source_ids,
 )
 import logging
-from hybrid_rag.providers import progress
+from hybrid_rag import progress
 
 from hybrid_rag.ingestion.knowledge_graph.extraction import (
     rebuild_knowledge_from_chunks,

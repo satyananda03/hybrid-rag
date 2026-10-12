@@ -43,7 +43,7 @@ from hybrid_rag.core.utils import (
 )
 from hybrid_rag.config import settings
 import logging
-from hybrid_rag.providers import progress
+from hybrid_rag import progress
 
 from hybrid_rag.ingestion.doc_status_fields import (
     build_chunks_dict_from_chunking_result,

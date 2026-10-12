@@ -7,7 +7,8 @@ Two entry points sharing one storage layer:
     core/         shared types, hashing, LLM cache, chunk schema, prompt loading
     storage/      PostgreSQL (KV, vector, doc status) and Neo4j (graph)
     config.py     settings, read from the environment / ``.env``
-    providers.py  what the host plugs in: LLM, embeddings, rerank, S3, progress
+    providers.py  what the host plugs in: LLM, embeddings, rerank
+    progress.py   live ingest/delete progress, reported to an optional host sink
 
 Data is isolated per ``workspace``; one instance per workspace is pooled by
 :mod:`hybrid_rag.workspace_pool`. The package never imports its host: call

@@ -132,9 +132,6 @@ ontology_entity_extraction:
     {ontology_schema}
     </schema_constraints>
 
-# Second pass over the same chunk. knowledge_graph.chain reuses the extraction system prompt
-# and replays the first pass through the `messages` placeholder, so the model
-# sees the rules and what it already returned.
 entity_continue_extraction:
   user_prompt: |
     <task>

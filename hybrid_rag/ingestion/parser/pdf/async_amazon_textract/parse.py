@@ -21,7 +21,8 @@ import fitz
 
 from hybrid_rag.config import settings
 import logging
-from hybrid_rag.providers import progress, s3
+from hybrid_rag import progress
+from hybrid_rag.storage.s3 import delete_object, require_bucket, upload_fileobj
 from ..amazon_textract.pages import RENDER_DPI
 from ..amazon_textract.quality import check_effective_dpi
 from ..amazon_textract.textract_api import TextractPageError, get_client
@@ -131,12 +132,12 @@ async def _run_job(pdf_bytes: bytes, n_pages: int) -> tuple[dict, list]:
     """Upload → Start → polling → kumpulkan Blocks; input S3 selalu dihapus."""
     token = uuid.uuid4().hex
     key = f"{settings.s3_prefix.strip('/')}/textract-input/{token}.pdf"
-    await asyncio.to_thread(s3.upload_fileobj, io.BytesIO(pdf_bytes), key, "application/pdf")
+    await asyncio.to_thread(upload_fileobj, io.BytesIO(pdf_bytes), key, "application/pdf")
     try:
         textract = get_client()
         job_id = (await asyncio.to_thread(
             textract.start_document_analysis,
-            DocumentLocation={"S3Object": {"Bucket": s3.require_bucket(), "Name": key}},
+            DocumentLocation={"S3Object": {"Bucket": require_bucket(), "Name": key}},
             FeatureTypes=FEATURE_TYPES,
             ClientRequestToken=token,  # retry boto atas Start tidak memulai job ganda
         ))["JobId"]
@@ -149,7 +150,7 @@ async def _run_job(pdf_bytes: bytes, n_pages: int) -> tuple[dict, list]:
         return first, blocks
     finally:
         try:
-            await asyncio.to_thread(s3.delete_object, key)
+            await asyncio.to_thread(delete_object, key)
         except Exception:
             logger.warning(f"[Textract] Gagal menghapus input S3 {key}", exc_info=True)
 

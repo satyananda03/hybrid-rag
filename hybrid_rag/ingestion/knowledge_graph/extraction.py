@@ -20,7 +20,7 @@ from hybrid_rag.core.utils import (
     performance_timing_log,
 )
 import logging
-from hybrid_rag.providers import progress
+from hybrid_rag import progress
 
 from hybrid_rag.core.base import (
     BaseGraphStorage,

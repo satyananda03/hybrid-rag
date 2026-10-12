@@ -339,10 +339,10 @@ def encode_image_to_base64(image_path: str) -> str:
     Encode image file to base64 string
 
     Tidak ada validasi ukuran/dimensi di sini, dan itu disengaja: penyaringan
-    sudah terjadi lebih dulu di parser. ``reconstruct_content_list`` di
-    ``ingestion/parser/amazon_textract.py`` membuang figure di bawah
-    MIN_FIGURE_WIDTH_PX/MIN_FIGURE_HEIGHT_PX (400x400) dan
-    MIN_FIGURE_AREA_RATIO, jadi gambar noise tidak pernah sampai ke sini.
+    sudah terjadi lebih dulu di parser: semua parser (PDF, docx, xlsx) membuang
+    figure di bawah FIGURE_MIN_WIDTH_PX/FIGURE_MIN_HEIGHT_PX (dan
+    FIGURE_MIN_AREA_RATIO untuk PDF), lihat ``parser/figures.py``, jadi gambar
+    noise tidak pernah sampai ke sini.
     Jangan tambahkan lagi knob VLM_MIN_IMAGE_PIXEL / VLM_MAX_IMAGE_BYTES —
     keduanya pernah ada, tidak punya pembaca, dan sudah dihapus.
 
