@@ -114,16 +114,3 @@ tabel, index) dan constraint Neo4j dibuat oleh:
 ```bash
 make db-init        # = uv run python -m hybrid_rag.db_init
 ```
-
-Jalankan saat setup pertama, setelah mengganti `EMBEDDING_MODEL`/`EMBEDDING_DIM`
-(tabel vector dinamai menurut model, jadi model baru = tabel baru, dan dokumen
-perlu di-ingest ulang), dan setelah ada perubahan schema di kode. Idempoten.
-Butuh role database yang boleh `CREATE SCHEMA` dan `CREATE EXTENSION`. Dari repo
-host: `from hybrid_rag.db_init import init_schema`.
-
-Isolasi data per `workspace`: kolom `workspace` di setiap tabel PostgreSQL dan
-properti `workspace` pada node `HybridRagEntity` di Neo4j (constraint unik
-`(workspace, entity_id)`). Jumlah workspace tidak menambah schema. Ingestion dan retrieval memakai pool PostgreSQL
-terpisah.
-
-Contoh host: `app/rag.py` di repo majaAI-be.
