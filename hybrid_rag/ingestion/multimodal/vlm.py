@@ -48,9 +48,8 @@ def _chat_prompt(target: str, *, with_image: bool) -> ChatPromptTemplate:
 @cache
 def _vlm() -> Runnable:
     settings.require("vlm")  # built on first use, so text-only ingestion needs no VLM
-    return providers.get_llm(
+    return providers.get_vlm(
         model_id=settings.vlm_model,
-        max_tokens=None,  # table analyses reach ~2.5K tokens; a cap truncates the structured output
         base_url=settings.vlm_binding_host,
         api_key=settings.vlm_binding_api_key,
         timeout=settings.vlm_timeout,

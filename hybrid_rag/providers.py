@@ -3,6 +3,7 @@ from hybrid_rag.config import settings
 
 _hooks: dict[str, Any] = {
     "get_llm": None,
+    "get_vlm": None,  # optional: falls back to get_llm
     "get_embeddings": None,
     "get_reranker": None,
 }
@@ -39,6 +40,11 @@ def get_llm(
         max_tokens=max_tokens,
         **extra,
     )
+
+def get_vlm(model_id: str, *, base_url: str | None, api_key: str | None, timeout: float | None = None) -> Any:
+    """A vision-capable chat model, uncapped: a ``max_tokens`` cap truncates the structured output."""
+    hook = _hooks["get_vlm"] or _require("get_llm")
+    return hook(model_id, base_url=base_url, api_key=api_key, timeout=timeout, max_retries=settings.max_retries, max_tokens=None)
 
 def get_embeddings(model_id: str, *, base_url: str | None, api_key: str | None, timeout: float | None = None) -> Any:
     return _require("get_embeddings")(model_id, base_url=base_url, api_key=api_key, timeout=timeout, max_retries=settings.max_retries)

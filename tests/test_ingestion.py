@@ -292,6 +292,14 @@ def test_every_model_factory_gets_the_same_connection_arguments(recorded_hooks):
     assert recorded_hooks["reranker"] == [(("m",), connection)]
 
 
+def test_vlm_falls_back_to_the_llm_factory_uncapped(recorded_hooks, monkeypatch):
+    from hybrid_rag import providers
+
+    monkeypatch.setitem(providers._hooks, "get_vlm", None)
+    providers.get_vlm("m", base_url="h", api_key="k", timeout=9.0)
+    assert recorded_hooks["llm"] == [(("m",), {"base_url": "h", "api_key": "k", "timeout": 9.0, "max_retries": 7, "max_tokens": None})]
+
+
 def test_temperature_is_forwarded_only_when_the_library_sets_it(recorded_hooks):
     from hybrid_rag import providers
 
