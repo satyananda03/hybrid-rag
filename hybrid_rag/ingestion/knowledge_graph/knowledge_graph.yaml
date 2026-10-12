@@ -78,8 +78,6 @@ entity_extraction:
     {input_text}
     </input_text>
 
-# Replaces entity_extraction's system prompt when a document is ingested under an
-# ontology; {ontology_schema} is filled by knowledge_graph.chain.
 ontology_entity_extraction:
   system_prompt: |
     <role>
@@ -148,8 +146,6 @@ entity_continue_extraction:
     - If nothing was missed and nothing needs correcting, return empty entity and relationship lists.
     </constraints>
 
-# Injected as {heading_context_block} when the chunk carries a heading
-# breadcrumb; rendered to an empty string when it does not.
 section_context:
   user_prompt: |
     <section_context>
@@ -186,8 +182,6 @@ keywords_extraction:
     {query}
     </user_query>
 
-# Merge many descriptions of one entity/relation into a single one. Not a chain:
-# invoked through use_llm_func_with_cache, so it is str.format()ed directly.
 summarize_entity_descriptions:
   user_prompt: |
     <role>

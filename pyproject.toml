@@ -26,7 +26,6 @@ ingestion = [
     "pymupdf>=1.28.0",
     "html-table-rescuer>=0.3.1",
     "unstructured[docx,xlsx]>=0.27.25",
-    # ontology-driven KG extraction (knowledge_graph/ontology_schema.py)
     "neo4j-graphrag>=1.13",
     "rdflib>=7",
 ]
@@ -53,3 +52,6 @@ packages = ["hybrid_rag"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Unit tests by default; the last -m on the command line wins, so `-m integration` selects the others.
+addopts = "-ra --strict-markers -m 'not integration'"
+markers = ["integration: needs the live PostgreSQL from .env (read-only queries); run with `make test-integration`"]

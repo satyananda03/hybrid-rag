@@ -106,9 +106,17 @@ bun run dev                                    # dev server :5174, proxy /api ->
 
 ## Development
 
+### Test
+
 ```bash
-uv sync --extra dashboard && uv run pytest
+make test               # unit test: tanpa jaringan, database, atau model
+make test-integration   # test yang membaca PostgreSQL dari .env (read-only); jalankan make db-init dulu
 ```
+
+`tests/test_ingestion.py` (parser, routing `parse_file`, S3, ontology, progress) dan
+`tests/test_retrieval.py` (sitasi, context, keyword, pencarian hybrid BM25).
+Fixture bersama ada di `tests/conftest.py`. Satu file/test saja:
+`uv run --extra ingestion pytest tests/test_retrieval.py -k citations`.
 
 ### Schema database
 
