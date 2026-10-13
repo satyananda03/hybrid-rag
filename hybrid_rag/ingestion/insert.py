@@ -9,35 +9,14 @@ Mixed into :class:`~hybrid_rag.ingestion.rag.IngestionRAG`, so ``self`` here is
 the RAG itself — storages, pipeline and processors are all reachable directly.
 """
 
-
 import os
 from typing import Dict, List, Any
-
 from hybrid_rag.ingestion.multimodal.content import (
     separate_content,
 )
 
-
-
 class _IngestionMixin:
-    """Insert a parsed content list into the RAG — the ingestion orchestrator.
-
-    Mixed into :class:`IngestionRAG`, so ``self`` here is that instance and the
-    storages are its fields. ``insert_content_list`` is the entry: it separates
-    text from multimodal items, hands the text half to the chunking + extraction
-    pipeline, routes each image / table / equation to its processor in
-    ``ingestion/multimodal/``, and tracks per-document status so a re-run skips
-    what is already done.
-    """
-
-
-
-
-
-
-
-
-
+    """Insert a parsed content list into the RAG — the ingestion orchestrator."""
     def _generate_content_based_doc_id(self, content_list: List[Dict[str, Any]]) -> str:
         """
         Generate doc_id based on document content
@@ -76,15 +55,6 @@ class _IngestionMixin:
         doc_id = compute_mdhash_id(content_signature, prefix="doc-")
 
         return doc_id
-
-
-
-
-
-
-
-
-
 
     async def _insert_text_content(
         self,

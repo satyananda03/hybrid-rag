@@ -1,8 +1,7 @@
 """Gerbang kualitas input: DPI efektif halaman scan (dari metadata, tanpa render)."""
-import fitz
+import pymupdf as fitz
 
 DPI_EFFECTIVE_THRESHOLD = 1
-
 
 class LowDpiPageError(Exception):
     """Raised ketika satu atau lebih halaman punya DPI efektif di bawah threshold."""

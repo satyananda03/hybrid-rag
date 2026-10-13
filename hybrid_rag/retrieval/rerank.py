@@ -64,10 +64,11 @@ async def apply_rerank_if_enabled(
             document_texts.append(content)
 
         # Call the new rerank function that returns index-based results
+        top_n_clamped = min(top_n, len(document_texts)) if top_n is not None else None
         rerank_results = await rerank_func(
             query=query,
             documents=document_texts,
-            top_n=top_n,
+            top_n=top_n_clamped,
         )
 
         # Process rerank results based on return format
@@ -131,7 +132,11 @@ async def process_chunks_unified(
 
     # 1. Apply reranking if enabled and query is provided
     if query_param.enable_rerank and query and unique_chunks:
-        rerank_top_k = query_param.chunk_top_k or len(unique_chunks)
+        rerank_top_k = (
+            min(query_param.chunk_top_k, len(unique_chunks))
+            if query_param.chunk_top_k is not None
+            else len(unique_chunks)
+        )
         unique_chunks = await apply_rerank_if_enabled(
             query=query,
             retrieved_docs=unique_chunks,

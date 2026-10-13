@@ -14,7 +14,7 @@ hybrid_rag/dashboard/static/
 .env
 
 # notebook sample data and outputs
-notebooks/test1.*
-notebooks/hasil_parsing_full.*
-notebooks/output.json
-notebooks/extracted_images/
+examples/test1.*
+examples/hasil_parsing_full.*
+examples/output.json
+examples/extracted_images/

@@ -1,5 +1,5 @@
 """PDF → halaman: split per halaman untuk Textract, render hanya bila butuh piksel."""
-import fitz
+import pymupdf as fitz
 from PIL import Image, ImageFilter
 
 RENDER_DPI = 400

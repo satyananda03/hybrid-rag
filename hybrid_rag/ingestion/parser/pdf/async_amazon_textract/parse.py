@@ -5,7 +5,7 @@ import os
 import random
 import time
 import uuid
-import fitz
+import pymupdf as fitz
 from hybrid_rag.config import settings
 import logging
 from hybrid_rag import progress
