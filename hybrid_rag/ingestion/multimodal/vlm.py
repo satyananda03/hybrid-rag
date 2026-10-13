@@ -55,15 +55,15 @@ class ImageAnalysis(BaseModel):
 class TableEntity(BaseModel):
     entity_name: str = Field(
         description=(
-            "A clean, semantic, distinctive title representing the dataset or subject of the table (e.g., 'Tabel Spesifikasi Hardware' or 'Data Demografi Pengguna')."
+            "A clean, semantic, distinctive title representing the dataset or subject of the table (e.g., 'Tabel Spesifikasi Hardware'). "
             "NEVER use generic labels like 'Table 1'."
         )
     )
     summary: Prose = Field(
         description=(
-            "An overall summary describing exactly WHAT information the table holds, its core purpose, and its structural dimensions (what the rows and columns represent)."
-            "NEVER generate subjective insights, conclusions, or takeaways."
-            "NEVER use introductory filler phrases like 'Tabel ini menunjukkan', start directly with the core subject."
+            "An overall summary describing exactly WHAT information the table holds, its core purpose, and its structural dimensions. "
+            "NEVER generate subjective insights or takeaways. "
+            "DO NOT use introductory filler phrases like 'Tabel ini menunjukkan', start directly with the core subject."
         )
     )
 
@@ -76,10 +76,10 @@ class TableEntity(BaseModel):
 class TableAnalysis(BaseModel):
     detailed_description: Prose = Field(
         description=(
-            "A complete, highly detailed explanation of the table's data in natural prose (no bullet points). "
-            "State the column headers, units of measurement, and explicitly articulate the exact row-by-row values, textual descriptions, or criteria verbatim."
-            "Always use specific entity names so every data point is fully self-contained."
-            "Strictly exclude table formatting styles and NEVER invent or hallucinate data."
+            "A comprehensive explanation of the table's structure and key data in natural prose (no bullet points). "
+            "State the column headers and units. "
+            "CRITICAL: For large tables, NEVER transcribe every single row. Instead, group the data by categories, highlight aggregate totals, maximum/minimum extremes, and overarching rules. "
+            "Always use specific entity names for self-contained sentences. Strictly exclude formatting styles and NEVER hallucinate data."
         )
     )
     entity_info: TableEntity

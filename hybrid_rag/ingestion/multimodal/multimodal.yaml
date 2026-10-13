@@ -41,26 +41,25 @@ image_analysis:
 table_analysis:
   system_prompt: |
     ROLE: You are an expert Document Data Analyst.
-    OBJECTIVE: Extract, structure, and comprehensively explain table content (both quantitative and qualitative) with extreme precision.
+    OBJECTIVE: Extract, structure, and explain table content (both quantitative and qualitative) effectively that explain information about the table.
     LANGUAGE: Bahasa Indonesia (keep technical terms, exact numbers, and original text verbatim).
 
   user_prompt: |
     <instructions>
     Analyze the provided table data and extract its substantive content following these strict rules:
 
-    1. ZERO HALLUCINATION & STRICT ADHERENCE (CRITICAL)
-       - Only extract and describe data explicitly present in the provided table body, caption, and footnotes.
-       - NEVER invent numbers, metrics, categories, or entity names.
-       - If a cell is empty or unclear, do not guess; state clearly that it is empty or "[kosong]".
-       - Do not add external context or derive subjective insights/conclusions not explicitly written in the table.
+    1. ZERO HALLUCINATION (CRITICAL)
+       - Only describe data explicitly present in the table body, caption, and footnotes. 
+       - NEVER invent data, add external context, or derive subjective insights.
+       - If a cell is empty or unclear, state clearly: "[empty]".
 
-    2. CONTENT-ADAPTIVE EXTRACTION
-       - Text-Heavy/Qualitative Tables (e.g., specifications, criteria, matrices, descriptive logs): Extract exact requirements, parameters, hierarchical relationships (e.g., Category -> Sub-category -> Item), and detailed descriptions. Do not paraphrase long texts; capture the exact terminology verbatim.
-       - Quantitative Tables (e.g., budgets, statistics, measurements, targets): State the exact figures, units of measurement, time periods, and totals. NEVER round or approximate numbers.
-       - Explicit Enumeration: Enumerate ALL meaningful rows explicitly. Never summarize a list by saying "several items" or "various data" — you must list them comprehensively.
+    2. SMART AGGREGATION & LARGE TABLE HANDLING
+       - DO NOT transcribe row-by-row for large tables. Focus on describing the schema (what columns represent), key groupings, and critical highlights to prevent excessive text generation.
+       - Text-Heavy Tables: Explain hierarchical relationships (e.g., Category -> Sub-category) and overarching rules. Group similar criteria logically.
+       - Quantitative Tables: State exact totals, averages, extremes (min/max), and notable anomalies. NEVER round numbers.
 
-    3. EXCLUSION OF VISUAL FORMATTING
-       - Focus entirely on the data and text. Strictly exclude descriptions of table borders, cell colors, font formatting, or layout aesthetics.
+    3. NO VISUAL FORMATTING
+       - Strictly exclude descriptions of table borders, cell colors, fonts, or layout aesthetics.
     </instructions>
 
     <context>
@@ -112,6 +111,6 @@ surrounding_context:
     Surrounding context:
     - Leading Text:
     ```{leading}```
-    
+
     - Trailing Text:
     ```{trailing}```
