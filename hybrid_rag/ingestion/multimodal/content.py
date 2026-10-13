@@ -380,7 +380,6 @@ def get_processor_for_type(modal_processors: Dict[str, Any], content_type: str):
     elif content_type == "equation":
         return modal_processors.get("equation")
     else:
-        # For other types, use generic processor
-        return modal_processors.get("generic")
+        return None  # unknown type; caller's guard raises MultimodalAnalysisError
 
 

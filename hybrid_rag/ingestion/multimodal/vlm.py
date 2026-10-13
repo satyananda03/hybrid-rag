@@ -1,17 +1,17 @@
-"""VLM chains for the multimodal items of a document: image, table, equation, generic.
+"""Chains for the multimodal items of a document.
 
-Each is a prompt from ``multimodal.yaml`` piped into the VLM bound to
-:class:`VisionAnalysis`, behind the LLM cache. The output models' names and field
-descriptions are part of the cache key (their JSON schema is hashed into it), so
-renaming them retires every cached analysis.
+- :func:`image_analysis_chain` — sends image + prompt to the VLM (vision-capable model).
+- :func:`table_analysis_chain` — sends text-only table prompt to the extractor LLM.
+- :func:`equation_analysis_chain` — sends text-only equation prompt to the extractor LLM.
 """
 
 from functools import cache
 from pathlib import Path
+from typing import Literal
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 from hybrid_rag import providers
 from hybrid_rag.config import settings
@@ -21,18 +21,101 @@ from hybrid_rag.core.utils import Prose
 
 MULTIMODAL_PROMPTS_PATH = Path(__file__).resolve().parent / "multimodal.yaml"
 
-
-class AnalysisEntity(BaseModel):
-    entity_name: str = Field(description="Semantic title for this item.")
-    entity_type: str = Field(description="image | table | equation | the content type.")
-    summary: Prose = Field(description="Concise summary of content and significance.")
-
-
-class VisionAnalysis(BaseModel):
-    detailed_description: Prose = Field(
-        description="Comprehensive prose analysis of the item."
+# IMAGE MODALITY
+class ImageEntity(BaseModel):
+    entity_name: str = Field(
+        description=(
+            "A clean, semantic, distinctive title representing the core subject of the image (e.g., 'Flowchart Verifikasi Dokumen SIPD')."
+            "NEVER use raw file names or generic labels like 'Figure 1'."
+        )
     )
-    entity_info: AnalysisEntity
+    summary: Prose = Field(
+        description=(
+            "An overall summary explaining what the image depicts, its functional purpose or context within the document, and the main takeaway."
+            "NEVER use introductory filler phrases like 'Gambar ini menunjukkan', start directly with the core subject."
+        )
+    )
+
+    @computed_field
+    @property
+    def entity_type(self) -> Literal["image"]:
+        return "image"
+
+class ImageAnalysis(BaseModel):
+    detailed_description: Prose = Field(
+        description=(
+            "A thorough, information-dense explanation of all content inside the image. "
+            "CRITICAL : Include all visible text, exact quantitative data points from charts, labels, system metrics, and workflow sequences or component relationships!"
+            "Strictly exclude visual styling (colors, fonts, lighting, decorative layout, etc)."
+        )
+    )
+    entity_info: ImageEntity
+
+# TABLE MODALITY
+class TableEntity(BaseModel):
+    entity_name: str = Field(
+        description=(
+            "A clean, semantic, distinctive title representing the dataset or subject of the table (e.g., 'Tabel Spesifikasi Hardware' or 'Data Demografi Pengguna')."
+            "NEVER use generic labels like 'Table 1'."
+        )
+    )
+    summary: Prose = Field(
+        description=(
+            "An overall summary describing exactly WHAT information the table holds, its core purpose, and its structural dimensions (what the rows and columns represent)."
+            "NEVER generate subjective insights, conclusions, or takeaways."
+            "NEVER use introductory filler phrases like 'Tabel ini menunjukkan', start directly with the core subject."
+        )
+    )
+
+    @computed_field
+    @property
+    def entity_type(self) -> Literal["table"]:
+        return "table"
+
+
+class TableAnalysis(BaseModel):
+    detailed_description: Prose = Field(
+        description=(
+            "A complete, highly detailed explanation of the table's data in natural prose (no bullet points). "
+            "State the column headers, units of measurement, and explicitly articulate the exact row-by-row values, textual descriptions, or criteria verbatim."
+            "Always use specific entity names so every data point is fully self-contained."
+            "Strictly exclude table formatting styles and NEVER invent or hallucinate data."
+        )
+    )
+    entity_info: TableEntity
+
+# EQUATION MODALITY
+class EquationEntity(BaseModel):
+    entity_name: str = Field(
+        description=(
+            "A clean, semantic, distinctive title identifying the mathematical formula, law, or calculation (e.g., 'Rumus Indeks Kepuasan Masyarakat'). "
+            "NEVER use generic labels like 'Equation 1' or 'Rumus 1'."
+        )
+    )
+    summary: Prose = Field(
+        description=(
+            "An overall summary stating exactly what this equation calculates or models, its domain context, and its practical significance. "
+            "NEVER use introductory filler phrases like 'Persamaan ini digunakan untuk', 'Rumus ini adalah', or 'This equation'. Start directly with the core subject."
+        )
+    )
+
+    @computed_field
+    @property
+    def entity_type(self) -> Literal["equation"]:
+        return "equation"
+
+
+class EquationAnalysis(BaseModel):
+    detailed_description: Prose = Field(
+        description=(
+            "A comprehensive breakdown of the mathematical expression in natural prose (no bullet points). "
+            "Include the exact transcription of the formula (in standard notation or LaTeX), explicitly define every variable, symbol, subscript, and constant, and explain their mathematical relationships. "
+            "Always use specific entity names and variable names so every sentence is fully self-contained. "
+            "NEVER invent variable definitions not supported by the context. "
+            "NEVER use meta-references like 'Persamaan ini menunjukkan', 'Berdasarkan rumus di atas', or 'Variabel X adalah'. Start directly with the factual mathematical breakdown."
+        )
+    )
+    entity_info: EquationEntity
 
 
 def _chat_prompt(target: str, *, with_image: bool) -> ChatPromptTemplate:
@@ -46,25 +129,69 @@ def _chat_prompt(target: str, *, with_image: bool) -> ChatPromptTemplate:
 
 
 @cache
-def _vlm() -> Runnable:
-    settings.require("vlm")  # built on first use, so text-only ingestion needs no VLM
+def _vlm_image() -> Runnable:
+    settings.require("vlm")
     return providers.get_vlm(
         model_id=settings.vlm_model,
         base_url=settings.vlm_binding_host,
         api_key=settings.vlm_binding_api_key,
         timeout=settings.vlm_timeout,
-    ).with_structured_output(VisionAnalysis)
+    ).with_structured_output(ImageAnalysis)
 
 
 @cache
-def analysis_chain(target: str) -> Runnable:
-    """The cached chain for one ``multimodal.yaml`` entry (``image_analysis``, ...)."""
+def _extract_llm_table() -> Runnable:
+    """Text-only LLM for table modality."""
+    return providers.get_llm(
+        model_id=settings.extract_llm_model,
+        base_url=settings.extract_llm_binding_host,
+        api_key=settings.extract_llm_binding_api_key,
+        timeout=settings.extract_llm_timeout,
+    ).with_structured_output(TableAnalysis)
+
+
+@cache
+def _extract_llm_equation() -> Runnable:
+    """Text-only LLM for equation modality."""
+    return providers.get_llm(
+        model_id=settings.extract_llm_model,
+        base_url=settings.extract_llm_binding_host,
+        api_key=settings.extract_llm_binding_api_key,
+        timeout=settings.extract_llm_timeout,
+    ).with_structured_output(EquationAnalysis)
+
+@cache
+def image_analysis_chain() -> Runnable:
+    """Vision chain: prompt + image sent to the VLM."""
     return cached_chain(
-        _chat_prompt(target, with_image=target == "image_analysis"),
-        _vlm(),
+        _chat_prompt("image_analysis", with_image=True),
+        _vlm_image(),
         cache_type="vlm",
-        output_model=VisionAnalysis,
+        output_model=ImageAnalysis,
         model_id=settings.vlm_model,
+    )
+
+
+@cache
+def table_analysis_chain() -> Runnable:
+    """Text-only chain for tables — uses extractor LLM, no VLM."""
+    return cached_chain(
+        _chat_prompt("table_analysis", with_image=False),
+        _extract_llm_table(),
+        cache_type="vlm",
+        output_model=TableAnalysis,
+        model_id=settings.extract_llm_model,
+    )
+
+@cache
+def equation_analysis_chain() -> Runnable:
+    """Text-only chain for equations — uses extractor LLM, no VLM."""
+    return cached_chain(
+        _chat_prompt("equation_analysis", with_image=False),
+        _extract_llm_equation(),
+        cache_type="vlm",
+        output_model=EquationAnalysis,
+        model_id=settings.extract_llm_model,
     )
 
 

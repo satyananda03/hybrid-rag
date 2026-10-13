@@ -402,14 +402,8 @@ class _AnalyzeMixin:
                     enhanced_caption=description,
                 )
 
-            else:  # generic or unknown types
-                content = str(original_item.get("content", original_item))
-
-                return TEMPLATES["generic_chunk"].format(
-                    content_type=content_type.title(),
-                    content=content,
-                    enhanced_caption=description,
-                )
+            else:
+                raise ValueError(f"Unknown content_type for chunk template: {content_type!r}")
 
         except Exception as e:
             self.logger.warning(

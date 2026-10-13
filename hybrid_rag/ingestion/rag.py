@@ -47,9 +47,6 @@ from hybrid_rag.ingestion.multimodal.analyze import _AnalyzeMixin
 from hybrid_rag.ingestion.multimodal.equation_processor import (
     EquationModalProcessor,
 )
-from hybrid_rag.ingestion.multimodal.generic_processor import (
-    GenericModalProcessor,
-)
 from hybrid_rag.ingestion.multimodal.image_processor import (
     ImageModalProcessor,
 )
@@ -415,19 +412,11 @@ class IngestionRAG(
             self._initialize_processors()
 
     def _initialize_processors(self) -> None:
-        """Build one processor per modality, plus a generic fallback.
-
-        Each processor analyses its block through the chains in
-        ``services/vlm_service.py``. Teks di sekitar blok ikut dikutip ke
-        prompt lewat ``_leading_text``/``_trailing_text`` yang sudah menempel
-        di item sejak ``separate_content`` — bukan state di processor.
-        """
+        """Build one processor per modality."""
         self.modal_processors = {
             "image": ImageModalProcessor(rag=self),
             "table": TableModalProcessor(rag=self),
             "equation": EquationModalProcessor(rag=self),
-            # Fallback for any block type not handled above.
-            "generic": GenericModalProcessor(rag=self),
         }
         logger.info(
             f"Multimodal processors ready: {sorted(self.modal_processors)}"

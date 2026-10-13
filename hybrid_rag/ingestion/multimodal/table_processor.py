@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 # Import prompt templates
 from hybrid_rag.ingestion.multimodal.base_processor import BaseModalProcessor
-from hybrid_rag.ingestion.multimodal.vlm import analysis_chain
+from hybrid_rag.ingestion.multimodal.vlm import table_analysis_chain
 from hybrid_rag.ingestion.multimodal.content import (
     format_table_body,
     get_table_body,
@@ -60,7 +60,7 @@ class TableModalProcessor(BaseModalProcessor):
         table_body = format_table_body(get_table_body(content_data))
         table_footnote = normalize_caption_list(content_data.get("table_footnote"))
 
-        analysis = await analysis_chain("table_analysis").ainvoke(
+        analysis = await table_analysis_chain().ainvoke(
             {
                 "context_block": self._context_block(content_data),
                 "entity_name": entity_name or "descriptive name for this table",

@@ -1,32 +1,29 @@
 # Multimodal analysis prompts.
-
 image_analysis:
   system_prompt: |
-    ROLE : You are an expert image analyst.
-    LANGUAGE : Bahasa Indonesia
+    ROLE: You are an expert Document Visuals Analyst.
+    OBJECTIVE: Extract and explain all factual information, data points, text, and contextual meaning contained within document images (charts, diagrams, screenshots, photos).
+    LANGUAGE: Bahasa Indonesia (keep technical terms, system names, codes, URLs, and verbatim text quotes in their original language as shown in the image).
 
   user_prompt: |
     <instructions>
-    1. CONTENT RECOGNITION & ADAPTABILITY
-       Examine the image carefully. Identify its implicit type (e.g. Photo, Chart, Screenshot, Diagram, Flowchart, Infographic) and adapt your analysis:
-       - For Charts/Diagrams: identify axes, labels, legends, and extract specific quantitative data points and trends.
-       - For Screenshots/Interfaces: identify layout, main functional components, and visible text.
-       - For Photos/Illustrations: identify the primary subject, scene, spatial layout, and relationships between elements.
-       - For Text/Tables: quote short important text verbatim; summarize long blocks. Always use specific names instead of generic pronouns.
+    Analyze the provided image carefully and extract all substantive information by following these strict guidelines:
 
-    2. USE OF ADDITIONAL CONTEXT
-       You are given contextual metadata (surrounding text, section path, image path, captions, footnotes).
-       - Use it to disambiguate acronyms, abbreviations, units, and entities.
-       - STRICT RULE: the IMAGE ITSELF takes absolute priority. Describe only what is visually verifiable. Do NOT use the context to invent or assume visual elements that are not present in the image.
+    1. ZERO VISUAL NOISE (STRICT RULE)
+       - NEVER describe cosmetic, aesthetic, or decorative attributes such as colors, font styles, font sizes, lighting, shadows, artistic composition, or UI design themes.
+       - Mention visual indicators ONLY when they convey factual meaning or status (e.g., state that a verification status is "Gagal", rather than describing "a red box").
 
-    3. detailed_description
-       - Write comprehensive, natural prose (do NOT use bullet points).
-       - Cover overall composition, visual style, colors, lighting, actions, and meaningful relationships between elements.
+    2. CONTENT-ADAPTIVE EXTRACTION
+       Identify the image type and extract its contents thoroughly:
+       - Charts / Graphs: State the title, axis labels, units, and legends. Explicitly list ALL quantitative data points (matching each category/time with its exact value) and describe the overall trend.
+       - Diagrams / Flowcharts: Identify every node/component. Trace and explain the exact sequence of steps, directional arrows, conditions, and hierarchical relationships from start to finish.
+       - Screenshots / Dashboards: Extract the system name, visible URLs, active menus, all displayed metrics/counts with their exact labels, and visible messages.
+       - General Photos / Field Evidence: Identify the main subjects, the functional activity taking place, the setting, and transcribe any readable text in the scene (e.g., banners, signboards).
 
-    4. entity_info
-       - `entity_name`: a clean, semantic, distinctive title (3–8 words, snake_case preferred) representing the image content. Do NOT return raw file names or generic figure numbers (like `figure_30_1`) unless that is the literal title written on the image.
-       - `entity_type`: MUST be exactly "image".
-       - `summary`: concise summary of the image content and its core significance, max 100 words.
+    3. USE OF DOCUMENT CONTEXT
+       You are provided with surrounding document metadata inside the `<context>` block.
+       - Use this context ONLY to clarify acronyms, abbreviations, incomplete units, or the broader topic of the image.
+       - IMAGE PRIORITY RULE: The image itself is the absolute primary source of truth. Describe only what is visually verifiable. Never invent or assume facts from the `<context>` that are not present in the image. Mark unreadable text as "[tidak terbaca]".
     </instructions>
 
     <context>
@@ -43,34 +40,28 @@ image_analysis:
 
 table_analysis:
   system_prompt: |
-    ROLE : You are an expert document analyst and legal/policy researcher. Provide a highly detailed and comprehensive analysis of the table content.
-    LANGUAGE : Bahasa Indonesia
-    CRITICAL INSTRUCTION : For qualitative or text-heavy tables (such as government matrices, criteria, or regulations), you MUST extract and comprehensively explain the descriptions, criteria, administrative requirements, and institutional roles found in the cells.
-    MANDATORY EXTRACTION : You are strictly required to identify and extract all key data points. This includes exact scores, thresholds, maturity levels, legal terms, specific clauses, and exact names of institutions or functions.
-    Do not merely summarize or gloss over long texts. Capture the exact nuances, policy narratives, and structural relationships — those detailed explanations and key data points are the core insights.
+    ROLE: You are an expert Document Data Analyst.
+    OBJECTIVE: Extract, structure, and comprehensively explain table content (both quantitative and qualitative) with extreme precision.
+    LANGUAGE: Bahasa Indonesia (keep technical terms, exact numbers, and original text verbatim).
 
   user_prompt: |
     <instructions>
-    1. detailed_description — analyze the table and adapt to its content:
-       - Table purpose, structure (columns, rows, hierarchy), and connection to surrounding text.
-       - If normative/structural (aspects, indicators, criteria, articles, roles, procedures): state exact provisions, hierarchical relationships, weights, and score thresholds.
-       - If quantitative (statistics, measurements, targets, budgets): report key data points, min/max, totals, trends, units, and time periods.
-       - If mixed: apply both.
-       - Include legal, policy or governmental data points (regulations, articles, laws, official decrees), compliance implications, sanctions or administrative requirements, and the roles, jurisdictions or hierarchy of the institutions mentioned.
-       - Always use specific names, values and legal citations (Pasal, UU, Peraturan) instead of general references.
+    Analyze the provided table data and extract its substantive content following these strict rules:
 
-    2. entity_info
-       - `entity_name`: "{entity_name}"
-       - `entity_type`: MUST be exactly "table".
-       - `summary`: the table's purpose, key findings, and its regulatory or governmental context, max 200 words.
+    1. ZERO HALLUCINATION & STRICT ADHERENCE (CRITICAL)
+       - Only extract and describe data explicitly present in the provided table body, caption, and footnotes.
+       - NEVER invent numbers, metrics, categories, or entity names.
+       - If a cell is empty or unclear, do not guess; state clearly that it is empty or "[kosong]".
+       - Do not add external context or derive subjective insights/conclusions not explicitly written in the table.
+
+    2. CONTENT-ADAPTIVE EXTRACTION
+       - Text-Heavy/Qualitative Tables (e.g., specifications, criteria, matrices, descriptive logs): Extract exact requirements, parameters, hierarchical relationships (e.g., Category -> Sub-category -> Item), and detailed descriptions. Do not paraphrase long texts; capture the exact terminology verbatim.
+       - Quantitative Tables (e.g., budgets, statistics, measurements, targets): State the exact figures, units of measurement, time periods, and totals. NEVER round or approximate numbers.
+       - Explicit Enumeration: Enumerate ALL meaningful rows explicitly. Never summarize a list by saying "several items" or "various data" — you must list them comprehensively.
+
+    3. EXCLUSION OF VISUAL FORMATTING
+       - Focus entirely on the data and text. Strictly exclude descriptions of table borders, cell colors, font formatting, or layout aesthetics.
     </instructions>
-
-    CRITICAL Rules:
-    1. Identify whether the table is normative, quantitative, or mixed — then apply the corresponding analysis.
-    2. Enumerate ALL meaningful rows explicitly (NEVER write "several indicators" — list them).
-    3. Preserve exact terminology, numbering, values, units, weights, and legal phrasing verbatim. Do NOT paraphrase or generalize.
-    4. Capture hierarchical relationships where present (e.g. Aspect → Indicator → Criterion).
-    5. For quantitative data: report exact figures, NEVER round or approximate.
 
     <context>
     {context_block}
@@ -83,25 +74,28 @@ table_analysis:
 
 equation_analysis:
   system_prompt: |
-    ROLE : You are an expert mathematician. Provide detailed mathematical analysis.
-    LANGUAGE : Bahasa Indonesia
+    ROLE: You are an expert Document Data Analyst and Mathematical/Technical Parser.
+    OBJECTIVE: Extract, transcribe, and comprehensively explain mathematical equations, formulas, and their variables with extreme precision.
+    LANGUAGE: Bahasa Indonesia (keep mathematical notation, variables, exact numbers, and original text verbatim).
 
   user_prompt: |
     <instructions>
-    1. detailed_description — a comprehensive analysis of the equation covering:
-       - Mathematical meaning and interpretation.
-       - Variables and their definitions, read in the light of the surrounding content when provided.
-       - Mathematical operations and functions used.
-       - Application domain and context.
-       - Physical or theoretical significance.
-       - Relationship to other mathematical concepts, including any mentioned in the surrounding context.
-       - Practical applications or use cases, and how the equation relates to the broader discussion.
-       Always use specific mathematical terminology.
+    Analyze the provided mathematical equation and extract its substantive content following these strict rules:
 
-    2. entity_info
-       - `entity_name`: "{entity_name}"
-       - `entity_type`: MUST be exactly "equation".
-       - `summary`: the equation's purpose, significance, and role in the surrounding context, max 100 words.
+    1. ZERO HALLUCINATION & STRICT ADHERENCE (CRITICAL)
+       - Only extract and define variables, constants, and symbols explicitly present in the equation or its surrounding `<context>`.
+       - NEVER invent or guess the meaning of a variable if it is not defined in the document (e.g., do not assume 'm' is mass if the text does not say so). Mark undefined variables clearly (e.g., "[definisi tidak disebutkan]").
+       - Do not add external theoretical context or derive subjective insights not explicitly written in the document.
+
+    2. COMPREHENSIVE BREAKDOWN
+       - Transcription: Write the exact formula/equation (use standard notation or LaTeX).
+       - Variable Definition: Explicitly articulate every single variable, subscript, superscript, and constant along with their units (if provided in the context).
+       - Mathematical Relationship: Explain how the variables interact (e.g., proportional, inversely proportional, sum, derivative) based on the formula structure and context.
+
+    3. OUTPUT FIELD ALIGNMENT
+       - `detailed_description`: Write a complete, highly structured explanation in natural prose (do NOT use bullet points). Always use specific entity and variable names so every sentence is self-contained. DO NOT use meta-references like 'Persamaan ini menunjukkan', 'Rumus di atas menghitung', or 'Terdapat variabel'. Start directly with the actual mathematical facts and variable definitions.
+       - `entity_info.entity_name`: Provide a clean, semantic, distinctive title (3–8 words) identifying the calculation (e.g., 'Rumus Indeks Kepuasan Masyarakat'). Do NOT return generic labels like 'Equation 1'.
+       - `entity_info.summary`: Write a concise summary (max 100 words) stating exactly WHAT the equation calculates and its domain context. DO NOT use introductory filler phrases like 'Persamaan ini mengukur' or 'Rumus ini'. Start directly with the core subject.
     </instructions>
 
     <context>
@@ -111,39 +105,13 @@ equation_analysis:
     - Equation: {equation_text}
     - Format: {equation_format}
     </context>
-
-generic_analysis:
-  system_prompt: |
-    ROLE : You are an expert content analyst specializing in {content_type} content.
-    LANGUAGE : Bahasa Indonesia
-
-  user_prompt: |
-    <instructions>
-    1. detailed_description — a comprehensive analysis of the content covering:
-       - Content structure and organization.
-       - Key information and elements.
-       - Relationships between components.
-       - Context and significance, including how this content connects to or supports the broader discussion when surrounding context is provided.
-       - Relevant details for knowledge retrieval.
-       Always use specific terminology appropriate for {content_type} content.
-
-    2. entity_info
-       - `entity_name`: "{entity_name}"
-       - `entity_type`: MUST be exactly "{content_type}".
-       - `summary`: the content's purpose, key points, and relationship to the surrounding context, max 100 words.
-    </instructions>
-
-    <context>
-    {context_block}
     
-    Content: {content}
-    </context>
-
 # Injected as {context_block} when the item has neighbouring text; rendered to an empty string when it does not.
 surrounding_context:
   user_prompt: |
     Surrounding context:
     - Leading Text:
     ```{leading}```
+    
     - Trailing Text:
     ```{trailing}```

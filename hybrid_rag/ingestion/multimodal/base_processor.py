@@ -20,7 +20,9 @@ if TYPE_CHECKING:
 # Import prompt templates
 from hybrid_rag.core.llm_cache import CACHE_CHUNK_ID, CACHE_KEYS, CACHE_KV
 from hybrid_rag.ingestion.multimodal.vlm import (
-    VisionAnalysis,
+    ImageAnalysis,
+    TableAnalysis,
+    EquationAnalysis,
     surrounding_context_block,
 )
 
@@ -87,7 +89,7 @@ class BaseModalProcessor:
 
     @staticmethod
     def _unpack_analysis(
-        analysis: VisionAnalysis | None,
+        analysis: ImageAnalysis | TableAnalysis | EquationAnalysis | None,
         entity_name: str | None,
         modality: str,
     ) -> Tuple[str, Dict[str, Any]]:

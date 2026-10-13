@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 # Import prompt templates
 from hybrid_rag.ingestion.multimodal.base_processor import BaseModalProcessor
-from hybrid_rag.ingestion.multimodal.vlm import analysis_chain
+from hybrid_rag.ingestion.multimodal.vlm import image_analysis_chain
 from hybrid_rag.ingestion.multimodal.content import encode_image_to_base64
 
 logger = logging.getLogger(__name__)
@@ -85,7 +85,7 @@ class ImageModalProcessor(BaseModalProcessor):
             image_url = f"data:{mime};base64,{image_base64}"
 
         logger.info(f"[VLM] Calling vision model for: {image_path}")
-        analysis = await analysis_chain("image_analysis").ainvoke(
+        analysis = await image_analysis_chain().ainvoke(
             {
                 "context_block": self._context_block(content_data),
                 "section_path": section_path or "None",

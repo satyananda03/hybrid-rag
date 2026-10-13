@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 # Import prompt templates
 from hybrid_rag.ingestion.multimodal.base_processor import BaseModalProcessor
-from hybrid_rag.ingestion.multimodal.vlm import analysis_chain
+from hybrid_rag.ingestion.multimodal.vlm import equation_analysis_chain
 from hybrid_rag.ingestion.multimodal.content import get_equation_text_and_format
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ class EquationModalProcessor(BaseModalProcessor):
 
         equation_text, equation_format = get_equation_text_and_format(content_data)
 
-        analysis = await analysis_chain("equation_analysis").ainvoke(
+        analysis = await equation_analysis_chain().ainvoke(
             {
                 "context_block": self._context_block(content_data),
                 "entity_name": entity_name or "descriptive name for this equation",

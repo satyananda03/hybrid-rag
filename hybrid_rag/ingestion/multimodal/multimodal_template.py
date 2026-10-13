@@ -43,10 +43,3 @@ Format: {equation_format}
 Mathematical Analysis: {enhanced_caption}
 """
 
-TEMPLATES["generic_chunk"] = """
-{content_type} Content Analysis:
-
-Content: {content}
-
-Analysis: {enhanced_caption}"""
-
