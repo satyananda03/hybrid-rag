@@ -1,16 +1,4 @@
 # Multimodal analysis prompts.
-#
-# Built into LangChain chains by app/services/vlm_service.py, so every `{name}`
-# is a chain input variable and literal braces must be doubled.
-#
-# The output SHAPE is not described here: it is enforced by the provider from
-# VisionAnalysis's JSON schema. What used to be a hand-written JSON template at
-# the bottom of each prompt is now the model definition, which is also what
-# parses the reply — so the two cannot drift apart.
-#
-# Each modality has ONE prompt. The `{context_block}` variable carries the
-# surrounding-text section when the item has neighbours and is empty when it
-# does not, replacing the old `*_with_context` twins.
 
 image_analysis:
   system_prompt: |

@@ -12,6 +12,10 @@ from hybrid_rag.storage.s3 import upload_figures_to_s3
 
 logger = logging.getLogger(__name__)
 
+# shortcut: hardcoded 1920px max, upgrade to config setting if models require higher resolution
+FIGURE_MAX_PIXELS = 1920
+
+
 def is_large_enough(width_px: int, height_px: int, area_ratio: float | None = None) -> bool:
     """Whether a figure clears the size thresholds."""
     return (
@@ -19,6 +23,7 @@ def is_large_enough(width_px: int, height_px: int, area_ratio: float | None = No
         and height_px >= settings.figure_min_height_px
         and (area_ratio is None or area_ratio >= settings.figure_min_area_ratio)
     )
+
 
 def is_large_image(data: bytes, name: str) -> bool:
     """:func:`is_large_enough` for embedded image bytes (docx, xlsx)."""
@@ -29,6 +34,18 @@ def is_large_image(data: bytes, name: str) -> bool:
         logger.warning(f"Gambar {name} dilewati: tidak bisa dibaca ({type(e).__name__})")
         return False
     return is_large_enough(width, height)
+
+
+def cap_image_size(img: Image.Image) -> Image.Image:
+    """Resize ``img`` so its longest side is at most ``FIGURE_MAX_PIXELS``.
+
+    Uses ``thumbnail`` (in-place, aspect-preserving). Returns the same object.
+    No-op when the image already fits.
+    """
+    if max(img.width, img.height) > FIGURE_MAX_PIXELS:
+        img.thumbnail((FIGURE_MAX_PIXELS, FIGURE_MAX_PIXELS), Image.Resampling.LANCZOS)
+    return img
+
 
 def host_figures(content_list: list[dict]) -> None:
     """Upload every local ``image`` item of ``content_list`` to S3, in place."""

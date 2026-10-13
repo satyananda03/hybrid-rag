@@ -21,6 +21,7 @@ from hybrid_rag.ingestion.knowledge_graph.ontology_schema import (
 from hybrid_rag.ingestion.multimodal.content import page_offsets_of
 from hybrid_rag.ingestion.parser.office.parser import parse_docx
 from hybrid_rag.ingestion.parser.spreadsheet.parser import parse_xlsx
+from hybrid_rag.ingestion.parser.figures import FIGURE_MAX_PIXELS, cap_image_size
 from hybrid_rag.storage.s3 import objects as s3_objects
 from hybrid_rag.storage.s3 import require_bucket, upload_figures_to_s3
 
@@ -65,6 +66,15 @@ def test_figure_thresholds_come_from_settings(docx_path, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "figure_min_width_px", 0)
     monkeypatch.setattr(settings, "figure_min_height_px", 0)
     assert len(images(parse_docx(docx_path, tmp_path / "out"))) == 2
+
+def test_cap_image_size_downscales_only_images_exceeding_max_pixels():
+    small = Image.new("RGB", (800, 600))
+    assert cap_image_size(small).size == (800, 600)
+
+    big = Image.new("RGB", (FIGURE_MAX_PIXELS * 2, FIGURE_MAX_PIXELS))
+    capped = cap_image_size(big)
+    assert max(capped.size) == FIGURE_MAX_PIXELS
+    assert capped.size == (FIGURE_MAX_PIXELS, FIGURE_MAX_PIXELS // 2)
 
 def parse(path):
     async def go():
