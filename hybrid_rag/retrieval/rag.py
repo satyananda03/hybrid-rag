@@ -15,7 +15,7 @@ from hybrid_rag.core.base import BaseGraphStorage, BaseKVStorage, BaseVectorStor
 from hybrid_rag.retrieval.types import QueryParam
 from hybrid_rag.core.namespace import NameSpace
 from hybrid_rag.retrieval.query import kg_query
-from hybrid_rag.core.utils import Tokenizer, TiktokenTokenizer, EmbeddingFunc
+from hybrid_rag.core.utils import Tokenizer, EmbeddingFunc, get_tokenizer
 from hybrid_rag.config import settings
 from hybrid_rag.core.types import KnowledgeGraph
 import logging
@@ -67,10 +67,7 @@ class RetrievalRAG:
     # ---
 
     tokenizer: Optional[Tokenizer] = field(default=None)
-    """Token counter for the context budget; defaults to tiktoken for ``tiktoken_model_name``."""
-
-    tiktoken_model_name: str = field(default="gpt-4o-mini")
-    """Model name used for tokenization with tiktoken."""
+    """Token counter for the context budget; None uses the shared :func:`get_tokenizer`."""
 
     embedding_func: EmbeddingFunc | None = field(default=None)
     """Function for computing text embeddings. Must be set before use."""
@@ -125,13 +122,7 @@ class RetrievalRAG:
             **self.vector_db_storage_cls_kwargs,
         }
 
-        # Init Tokenizer
-        # Post-initialization hook to handle backward compatabile tokenizer initialization based on provided parameters
-        if self.tokenizer is None:
-            if self.tiktoken_model_name:
-                self.tokenizer = TiktokenTokenizer(self.tiktoken_model_name)
-            else:
-                self.tokenizer = TiktokenTokenizer()
+        self.tokenizer = self.tokenizer or get_tokenizer()
 
 
         if self.rerank_model_func is not None:

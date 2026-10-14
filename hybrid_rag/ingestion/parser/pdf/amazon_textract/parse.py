@@ -1,72 +1,88 @@
-"""Orkestrasi PDF → raw JSON Textract: cek kualitas → split → AnalyzeDocument per halaman."""
-import json
+"""Orkestrasi PDF → raw JSON Textract: cek kualitas → Blocks per halaman (sync atau async) → raw JSON."""
+import asyncio
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import logging
+from hybrid_rag import progress
+from hybrid_rag.config import settings
+from .async_job import analyze_job
 from .pages import split_pdf_pages
 from .quality import check_effective_dpi
 from .textract_api import TextractPageError, analyze_page, get_client
 
 logger = logging.getLogger(__name__)
 
+MODES = ("sync", "async")
+SYNC_MAX_WORKERS = 5
+
 
 def _analyze_pages(textract, file_path: str, n_pages: int, max_workers: int) -> list:
     """Kirim semua halaman ke Textract; return hasil per halaman sesuai urutan."""
     raw_pages = [None] * n_pages
+    progress.activity(f"Textract sync: memproses {n_pages} halaman")
 
     if max_workers > 1:
-        # Concurrent processing: split PDF cuma ~ms/halaman, jadi semua halaman
-        # langsung disubmit; PDF per halaman kecil (~0.1-0.3 MB) sehingga antrean di RAM ringan.
-        print(f"[Textract] Concurrent processing dengan {max_workers} workers")
+        logger.info(f"[Textract] Concurrent processing dengan {max_workers} workers ({n_pages} halaman)")
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_idx = {
                 executor.submit(analyze_page, textract, page): page["page_idx"]
                 for page in split_pdf_pages(file_path)
             }
-            print(f"[Textract] {n_pages} halaman disubmit ke Textract")
             for future in as_completed(future_to_idx):
                 idx = future_to_idx[future]
                 raw_pages[idx] = future.result()  # analyze_page tidak pernah raise
-                logger.info(f"[Textract] Halaman {idx + 1}/{n_pages} selesai" + (f" (ERROR: {raw_pages[idx]['error']})" if raw_pages[idx]["error"] else ""))
+                if raw_pages[idx]["error"]:
+                    logger.warning(f"[Textract] Halaman {idx + 1}/{n_pages} selesai (ERROR: {raw_pages[idx]['error']})")
+                else:
+                    logger.info(f"[Textract] Halaman {idx + 1}/{n_pages} selesai")
     else:
-        # Sequential processing
+        logger.info(f"[Textract] Sequential processing ({n_pages} halaman)")
         for page in split_pdf_pages(file_path):
             idx = page["page_idx"]
-            print(f"[Textract] Memproses halaman {idx + 1}/{n_pages}...")
             raw_pages[idx] = analyze_page(textract, page)
             if raw_pages[idx]["error"]:
-                logger.warning(f"[Textract] Halaman {idx + 1} error: {raw_pages[idx]['error']}")
+                logger.warning(f"[Textract] Halaman {idx + 1}/{n_pages} error: {raw_pages[idx]['error']}")
             else:
-                logger.info(f"[Textract] Halaman {idx + 1} selesai")
+                logger.info(f"[Textract] Halaman {idx + 1}/{n_pages} selesai")
+
+    progress.activity("Textract sync selesai")
     return raw_pages
 
 
-def parse_document_to_json(file_path: str, output_file: str = "raw_output.json", region_name: str = None, max_workers: int = 5) -> dict:
-    """Pipeline PDF -> raw Output JSON."""
+async def parse_document_to_json(
+    file_path: str,
+    output_file: str = "raw_output.json",
+    mode: str | None = None,
+) -> dict:
+    """Pipeline PDF -> raw Output JSON via Textract; raw JSON-nya berbentuk sama di kedua mode.
+
+    ``mode`` (default ``TEXTRACT_MODE``) hanya menentukan cara Blocks per halaman diambil:
+    ``sync`` = AnalyzeDocument per halaman secara paralel, ``async`` = satu job
+    StartDocumentAnalysis lewat S3 (wajib satu region dengan bucket). ``output_file``
+    hanya menentukan working directory: crop figure masuk ke ``images/`` di sebelahnya.
+    """
+    mode = mode or settings.textract_mode
+    if mode not in MODES:
+        raise ValueError(f"TEXTRACT_MODE harus 'sync' atau 'async', bukan {mode!r}")
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"❌ File tidak ditemukan: {file_path}")
 
-    all_dpi = check_effective_dpi(file_path)
+    all_dpi = await asyncio.to_thread(check_effective_dpi, file_path)
 
-    output_file = os.path.abspath(output_file)
-    tmp_dir = os.path.dirname(output_file)
-    os.makedirs(tmp_dir, exist_ok=True)
-
-    images_dir = os.path.join(tmp_dir, "images")
+    images_dir = os.path.join(os.path.dirname(os.path.abspath(output_file)), "images")
     os.makedirs(images_dir, exist_ok=True)
 
-    print(f"[Textract] Memecah PDF per halaman: {file_path}")
-    raw_pages = _analyze_pages(get_client(), file_path, len(all_dpi), max_workers)
+    if mode == "sync":
+        raw_pages = await asyncio.to_thread(_analyze_pages, get_client(), file_path, len(all_dpi), SYNC_MAX_WORKERS)
+    else:
+        raw_pages = await analyze_job(file_path)
 
     raw_data = {
         "source_pdf": os.path.abspath(file_path),
         "images_dir": images_dir,
         "pages": raw_pages,
     }
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(raw_data, f, ensure_ascii=False, indent=2, default=str)
-    print(f"[Textract] Raw JSON disimpan ke: {output_file}")
 
     failed_pages = [p for p in raw_pages if p["error"]]
     if failed_pages:

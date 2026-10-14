@@ -87,6 +87,7 @@ class RagSettings(BaseSettings):
     textract_secret_access_key: Optional[str] = Field(default=None, validation_alias="TEXTRACT_SECRET_ACCESS_KEY")
     textract_region: Optional[str] = Field(default=None, validation_alias="TEXTRACT_REGION")
     textract_max_concurrent_jobs: int = Field(default=50, validation_alias="TEXTRACT_MAX_CONCURRENT_JOBS")
+    textract_mode: str = Field(default="async", validation_alias="TEXTRACT_MODE")  # "async" | "sync"
     figure_min_width_px: int = Field(default=500, validation_alias="FIGURE_MIN_WIDTH_PX")
     figure_min_height_px: int = Field(default=500, validation_alias="FIGURE_MIN_HEIGHT_PX")
     figure_min_area_ratio: float = Field(default=0.01, validation_alias="FIGURE_MIN_AREA_RATIO")

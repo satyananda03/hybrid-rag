@@ -31,7 +31,7 @@ from hybrid_rag.ingestion.knowledge_graph.extraction import (
 from hybrid_rag.core.exceptions import IndexFlushError
 from hybrid_rag.core.utils import (
     Tokenizer,
-    TiktokenTokenizer,
+    get_tokenizer,
     EmbeddingFunc,
     normalize_source_ids_limit_method,
 )
@@ -114,13 +114,8 @@ class IngestionRAG(
 
     tokenizer: Optional[Tokenizer] = field(default=None)
     """
-    A function that returns a Tokenizer instance.
-    If None, and a `tiktoken_model_name` is provided, a TiktokenTokenizer will be created.
-    If both are None, the default TiktokenTokenizer is used.
+    Token counter for every token budget; None uses the shared :func:`get_tokenizer`.
     """
-
-    tiktoken_model_name: str = field(default="gpt-4o-mini")
-    """Model name used for tokenization when chunking text with tiktoken. Defaults to `gpt-4o-mini`."""
 
     embedding_func: EmbeddingFunc | None = field(default=None)
     """Function for computing text embeddings. Must be set before use."""
@@ -222,13 +217,7 @@ class IngestionRAG(
             **self.vector_db_storage_cls_kwargs,
         }
 
-        # Init Tokenizer
-        # Post-initialization hook to handle backward compatabile tokenizer initialization based on provided parameters
-        if self.tokenizer is None:
-            if self.tiktoken_model_name:
-                self.tokenizer = TiktokenTokenizer(self.tiktoken_model_name)
-            else:
-                self.tokenizer = TiktokenTokenizer()
+        self.tokenizer = self.tokenizer or get_tokenizer()
 
         # Validate config
         if self.force_llm_summary_on_merge < 3:

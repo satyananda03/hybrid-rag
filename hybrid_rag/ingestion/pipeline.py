@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import AsyncIterator
 import logging
 from hybrid_rag import progress
-from hybrid_rag.ingestion.parser.figures import host_figures
-from hybrid_rag.ingestion.parser.office.parser import parse_docx
-from hybrid_rag.ingestion.parser.pdf.amazon_textract import reconstruct_content_list
-from hybrid_rag.ingestion.parser.pdf import async_amazon_textract
+from hybrid_rag.ingestion.parser.figures import fit_figures, host_figures
+from hybrid_rag.ingestion.parser.office.docx import parse_docx
+from hybrid_rag.ingestion.parser.pdf.amazon_textract import parse_document_to_json, reconstruct_content_list
+from hybrid_rag.ingestion.parser.pdf.slides import is_slide_deck, parse_slides
 from hybrid_rag.ingestion.parser.spreadsheet.parser import parse_xlsx
 
 logger = logging.getLogger(__name__)
@@ -35,10 +35,10 @@ def _read_content_list(path: Path) -> list[dict]:
     return data
 
 async def _parse_pdf(path: Path, tmp_dir: Path) -> list[dict]:
-    """Textract (async job), then the content list rebuilt from its blocks."""
-    raw_parse = await async_amazon_textract.parse_document_to_json(
-        str(path), output_file=str(tmp_dir / "raw_parsing_result.json")
-    )
+    """Dek slide → VLM per slide; selain itu Textract (TEXTRACT_MODE: async/sync), lalu content list dari blocks."""
+    if is_slide_deck(path):
+        return await parse_slides(path, tmp_dir)
+    raw_parse = await parse_document_to_json(str(path), output_file=str(tmp_dir / "raw_parsing_result.json"))
     return await asyncio.to_thread(
         reconstruct_content_list, raw_parse, output_file=str(tmp_dir / "formatted_parsing_result.json")
     )
@@ -53,8 +53,11 @@ async def _read_text(path: Path, tmp_dir: Path) -> list[dict]:
     return await asyncio.to_thread(_read_text_document, path)
 
 async def _read_prebuilt(path: Path, tmp_dir: Path) -> list[dict]:
-    """A content list that is already the parser's output (``notion_sync``): nothing to parse."""
-    return await asyncio.to_thread(_read_content_list, path)
+    """A content list that is already the parser's output (``notion_sync``): nothing to parse,
+    only its images brought under the VLM limits like every parser's figures."""
+    content_list = await asyncio.to_thread(_read_content_list, path)
+    await asyncio.to_thread(fit_figures, content_list, tmp_dir)
+    return content_list
 
 PARSERS = {
     "pdf": (_parse_pdf, True),
@@ -63,7 +66,7 @@ PARSERS = {
     "md": (_read_text, False),
     "markdown": (_read_text, False),
     "txt": (_read_text, False),
-    "json": (_read_prebuilt, False),
+    "json": (_read_prebuilt, True),
 }
 SUPPORTED_INGEST_EXTENSIONS = frozenset(PARSERS)
 

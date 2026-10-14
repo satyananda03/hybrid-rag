@@ -9,7 +9,7 @@ from unstructured.partition.docx import partition_docx
 from unstructured.documents.elements import Table as UnstructuredTable
 from html_table_rescuer import TableParser
 
-from hybrid_rag.ingestion.parser.figures import FIGURE_MAX_PIXELS, cap_image_size, is_large_image
+from hybrid_rag.ingestion.parser.figures import is_large_image, save_for_vlm
 
 # ============================================================
 # NAMESPACE
@@ -108,13 +108,7 @@ def extract_images_from_paragraph(paragraph, doc, img_dir):
                     continue
                 path = Path(img_dir) / filename
                 with Image.open(BytesIO(image_part.blob)) as pil_img:
-                    if max(pil_img.size) > FIGURE_MAX_PIXELS:
-                        cap_image_size(pil_img)
-                        if ext.lower().lstrip(".") in ("jpg", "jpeg") and pil_img.mode not in ("RGB", "L"):
-                            pil_img = pil_img.convert("RGB")
-                        pil_img.save(str(path))
-                    else:
-                        path.write_bytes(image_part.blob)
+                    path = save_for_vlm(pil_img, path, original=image_part.blob)
                 images.append({"img_path": str(path.resolve()), "rId": rId})
             except Exception:
                 continue

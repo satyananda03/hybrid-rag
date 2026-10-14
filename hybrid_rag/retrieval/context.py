@@ -10,7 +10,9 @@
 """
 
 
+import html
 import json
+import re
 from typing import Any
 
 from hybrid_rag.retrieval.utils import convert_to_user_format, generate_reference_list_from_chunks, pick_by_vector_similarity, pick_by_weighted_polling
@@ -258,6 +260,9 @@ async def _attach_sources(
     bila tidak — karena sitasi harus menunjuk teks yang benar-benar dibaca LLM.
     ``chunk_id`` / ``file_path`` tetap milik child.
 
+    Gambar slide (``sidecar.images``, dek slide) ikut ke chunk sebagai ``images`` setiap
+    kali baris tersimpannya dibaca.
+
     ``limit`` memotong hasil (``parent_top_k`` saat ``return_parent``; batas jumlah,
     bukan token — parent juga teks asli).
     """
@@ -289,9 +294,11 @@ async def _attach_sources(
                 continue
             seen.add(pid)
             chunk, row = {**chunk, "content": parent["content"]}, parent
+        sidecar = row.get("sidecar") or {}
         if include_citations:
-            sidecar = row.get("sidecar") or {}
             chunk = {**chunk, "page_start": sidecar.get("page_start"), "page_end": sidecar.get("page_end")}
+        if sidecar.get("images"):
+            chunk = {**chunk, "images": sidecar["images"]}  # gambar slide halaman ini (slides.py)
         out.append(chunk)
 
     if return_parent:
@@ -409,6 +416,52 @@ async def _merge_all_chunks(
 
     return merged_chunks
 
+# Image chunk as built by ``multimodal_template.py`` (``image_chunk``).
+_IMAGE_CHUNK = re.compile(
+    r"- Section Path: (?P<section>.*?)\n- Neighbor Text: (?P<neighbor>.*?)\n"
+    r"Image Path: (?P<url>[^\n]*)\nCaptions: (?P<captions>[^\n]*)\n"
+    r"Footnotes: (?P<footnotes>[^\n]*)\n\nVisual Analysis: (?P<analysis>.*)",
+    re.S,
+)
+
+
+def _one_line(text: str) -> str:
+    """Merged KG description as one line: ``<SEP>`` and paragraph breaks become spaces."""
+    return " ".join(str(text).replace(GRAPH_FIELD_SEP, " ").split())
+
+
+def _pages(chunk: dict) -> set:
+    """Pages a chunk spans; a sheet name stands for itself. Empty without citations."""
+    start, end = chunk.get("page_start"), chunk.get("page_end")
+    if isinstance(start, int) and isinstance(end, int):
+        return set(range(start, end + 1))
+    return {start} if start is not None else set()
+
+
+def _render_chunk(chunk: dict, source: str, covered: set) -> str:
+    attrs = [("ref_id", chunk.get("reference_id")), ("source", source)]
+    image = _IMAGE_CHUNK.search(chunk["content"])
+    if image is None:
+        body = chunk["content"].strip()
+        if chunk.get("content_headings"):
+            body = f"[Section: {chunk['content_headings']}]\n{body}"
+    else:
+        attrs += [("type", "image"), ("image_url", image["url"].strip())]
+        page = chunk.get("page_start")
+        # Teks tetangga dibuang hanya bila halamannya sudah dibawa text chunk lain di konteks ini.
+        keep_neighbor = page is None or (chunk.get("file_path"), page) not in covered
+        lines = [
+            f"[Section: {image['section'].strip()}]" if image["section"].strip() != "None" else "",
+            f"Neighbor Text: {image['neighbor'].strip()}" if keep_neighbor and image["neighbor"].strip() != "None" else "",
+            f"Captions: {image['captions'].strip()}" if image["captions"].strip() != "None" else "",
+            f"Footnotes: {image['footnotes'].strip()}" if image["footnotes"].strip() != "None" else "",
+            f"Visual Analysis: {image['analysis'].strip()}",
+        ]
+        body = "\n".join(line for line in lines if line)
+    attr_str = "".join(f' {k}="{html.escape(str(v))}"' for k, v in attrs if v)
+    return f"<chunk{attr_str}>\n{body}\n</chunk>"
+
+
 async def _build_context_str(
     entities_context: list[dict],
     relations_context: list[dict],
@@ -426,12 +479,6 @@ async def _build_context_str(
     by token in ``_apply_token_truncation``; chunks are only capped by count.
     """
     kg_context_template = TEMPLATES["kg_query_context"]
-    entities_str = "\n".join(
-        json.dumps(entity, ensure_ascii=False) for entity in entities_context
-    )
-    relations_str = "\n".join(
-        json.dumps(relation, ensure_ascii=False) for relation in relations_context
-    )
 
     # Chunk = teks asli: hanya rerank + chunk_top_k, tidak pernah dipotong per token.
     truncated_chunks = await process_chunks_unified(
@@ -454,22 +501,44 @@ async def _build_context_str(
     if include_citations:
         reference_list, truncated_chunks = generate_reference_list_from_chunks(truncated_chunks)
 
-    chunks_context = []
-    for chunk in truncated_chunks:
-        entry = {"reference_id": chunk["reference_id"]} if include_citations else {}
-        entry["content"] = chunk["content"]
-        if chunk.get("content_headings"):
-            entry["content_headings"] = chunk["content_headings"]
-        chunks_context.append(entry)
-
-    text_units_str = "\n".join(
-        json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
-    )
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        + (f", {ref['location']}" if ref.get("location") else "")
+    sources = {
+        ref["reference_id"]: ref["file_path"] + (f", {ref['location']}" if ref.get("location") else "")
         for ref in reference_list
+    }
+    covered = {
+        (chunk.get("file_path"), page)
+        for chunk in truncated_chunks
+        if not _IMAGE_CHUNK.search(chunk["content"])
+        for page in _pages(chunk)
+    }
+    chunks_context = [
+        _render_chunk(chunk, sources.get(chunk.get("reference_id"), ""), covered)
+        for chunk in truncated_chunks
+    ]
+
+    # [Ref] only points at chunks actually in this context, so a KG fact is never cited to a missing source.
+    chunk_refs = {c.get("chunk_id"): c["reference_id"] for c in truncated_chunks if c.get("reference_id")}
+
+    def cite(original: dict | None) -> str:
+        source_id = (original or {}).get("source_id") or ""
+        ids = dict.fromkeys(
+            chunk_refs[c] for c in split_string_by_multi_markers(source_id, [GRAPH_FIELD_SEP]) if c in chunk_refs
+        )
+        return f" [Ref: {', '.join(sorted(ids, key=int))}]" if ids else ""
+
+    entities_str = "\n".join(
+        f"- **{e['entity']}** ({e['type']}): {_one_line(e['description'])}"
+        + cite((entity_id_to_original or {}).get(e["entity"]))
+        for e in entities_context
     )
+    # Edges are undirected, so no arrow.
+    relations_str = "\n".join(
+        f"- **{r['entity1']}** — **{r['entity2']}**: {_one_line(r['description'])}"
+        + cite((relation_id_to_original or {}).get((r["entity1"], r["entity2"])))
+        for r in relations_context
+    )
+    text_units_str = "\n\n".join(chunks_context)
+    reference_list_str = "\n".join(f"[{ref_id}] {source}" for ref_id, source in sources.items())
 
     logger.info(
         f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(chunks_context)} chunks"
@@ -511,9 +580,10 @@ async def _build_context_str(
         entities_str=entities_str,
         relations_str=relations_str,
         text_chunks_str=text_units_str,
+        references_block=TEMPLATES["kg_query_references"].format(reference_list_str=reference_list_str)
+        if reference_list
+        else "",
     )
-    if reference_list:
-        result += TEMPLATES["kg_query_references"].format(reference_list_str=reference_list_str)
 
     # Always return both context and complete data structure (unified approach)
     logger.debug(

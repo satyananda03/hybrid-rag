@@ -1,15 +1,17 @@
 """Panggilan AWS Textract: client bersama + AnalyzeDocument per halaman."""
 import io
+import logging
 import threading
 
 import boto3
 from botocore.config import Config
 
 from hybrid_rag.config import settings
-import logging
 from .pages import render_page_image
 
 logger = logging.getLogger(__name__)
+
+FEATURE_TYPES = ["LAYOUT", "TABLES"]
 
 # Batas sync AnalyzeDocument: 10 MB per dokumen (Set Quotas in Amazon Textract).
 TEXTRACT_SYNC_MAX_BYTES = 10 * 1024 * 1024
@@ -32,11 +34,7 @@ _client = None
 
 
 def get_client():
-    """Satu client Textract per proses (client boto3 thread-safe, pembuatannya tidak).
-
-    Dipakai bersama semua dokumen supaya rate limiter ``adaptive`` (per instance
-    client) melihat total trafik ke kuota TPS akun, dan koneksi TLS tetap hangat.
-    """
+    """Satu client Textract per proses (client boto3 thread-safe, pembuatannya tidak)."""
     global _client
     with _client_lock:
         if _client is None:
@@ -46,10 +44,7 @@ def get_client():
                 aws_secret_access_key=settings.textract_secret_access_key,
                 region_name=settings.textract_region,
                 config=Config(
-                    # Throttle ditangani retry adaptif (rate-limit sisi klien),
-                    # bukan langsung jadi halaman error.
                     retries={"mode": "adaptive", "max_attempts": 8},
-                    # Default 10; beberapa dokumen x max_workers berbagi pool ini.
                     max_pool_connections=50,
                 ),
             )
@@ -62,25 +57,38 @@ def page_document_bytes(page: dict) -> bytes:
         return page["doc_bytes"]
     logger.warning(f"[Textract] Halaman {page['page_idx'] + 1} PDF >10 MB, fallback ke PNG render")
     buf = io.BytesIO()
+    # Gunakan enhance=False pada fallback bila ingin karakter piksel sedekat mungkin dengan PDF asli
     render_page_image(page["source_pdf"], page["page_idx"]).save(buf, "PNG")
     return buf.getvalue()
 
 
 def analyze_page(textract_client, page: dict) -> dict:
-    """Proses satu halaman : panggil Textract lalu simpan hasil + metadata. Tidak pernah raise."""
+    """Proses satu halaman: panggil Textract lalu simpan hasil + metadata. Tidak pernah raise.
+
+    Struktur dict & validasi BlockType == 'PAGE' disamakan persis dengan _raw_pages (async).
+    """
     try:
         response = textract_client.analyze_document(
             Document={"Bytes": page_document_bytes(page)},
-            FeatureTypes=["LAYOUT", "TABLES"],
+            FeatureTypes=FEATURE_TYPES,
         )
+        blocks = response.get("Blocks", [])
+        
+        # Samakan dengan validasi di _raw_pages (Async):
+        if not any(b.get("BlockType") == "PAGE" for b in blocks):
+            error = "tidak ada hasil Textract untuk halaman ini"
+            blocks = []
+        else:
+            error = None
+
         result = {
             "page_idx": page["page_idx"],
             "img_w": page["img_w"],
             "img_h": page["img_h"],
             "DocumentMetadata": response.get("DocumentMetadata"),
             "AnalyzeDocumentModelVersion": response.get("AnalyzeDocumentModelVersion"),
-            "Blocks": response.get("Blocks", []),
-            "error": None,
+            "Blocks": blocks,
+            "error": error,
         }
     except Exception as e:
         result = {

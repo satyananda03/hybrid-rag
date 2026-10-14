@@ -36,11 +36,16 @@ def _locate(haystack: str, needle: str, search_from: int) -> tuple[int, int] | N
     return _normalized_child_offsets(haystack, needle, search_from)
 
 
-def _page_range(page_offsets: list[dict[str, Any]], starts: list[int], span: tuple[int, int]) -> dict[str, int | str]:
-    """Halaman awal/akhir untuk satu span karakter; ``starts`` = ``[o["start"]]`` terurut."""
+def _page_range(page_offsets: list[dict[str, Any]], starts: list[int], span: tuple[int, int]) -> dict[str, Any]:
+    """Halaman awal/akhir untuk satu span karakter; ``starts`` = ``[o["start"]]`` terurut.
+
+    Plus ``images`` — gambar slide di rentang itu — bila offset-nya membawa ``image``.
+    """
     first = max(0, bisect.bisect_right(starts, span[0]) - 1)
     last = max(0, bisect.bisect_right(starts, max(span[0], span[1] - 1)) - 1)
-    return {"page_start": page_offsets[first]["page"], "page_end": page_offsets[last]["page"]}
+    pages = {"page_start": page_offsets[first]["page"], "page_end": page_offsets[last]["page"]}
+    images = list(dict.fromkeys(o["image"] for o in page_offsets[first:last + 1] if o.get("image")))
+    return {**pages, "images": images} if images else pages
 
 
 def chunking_parent_child(

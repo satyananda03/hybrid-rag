@@ -3,12 +3,14 @@
 - :func:`image_analysis_chain` — sends image + prompt to the VLM (vision-capable model).
 - :func:`table_analysis_chain` — sends text-only table prompt to the extractor LLM.
 - :func:`equation_analysis_chain` — sends text-only equation prompt to the extractor LLM.
+- :func:`slide_transcription_chain` — sends a whole slide + its text layer to the VLM, returns Markdown.
 """
 
 from functools import cache
 from pathlib import Path
 from typing import Literal
 
+from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
 from pydantic import BaseModel, Field, computed_field
@@ -129,14 +131,19 @@ def _chat_prompt(target: str, *, with_image: bool) -> ChatPromptTemplate:
 
 
 @cache
-def _vlm_image() -> Runnable:
+def _vlm() -> Runnable:
     settings.require("vlm")
     return providers.get_vlm(
         model_id=settings.vlm_model,
         base_url=settings.vlm_binding_host,
         api_key=settings.vlm_binding_api_key,
         timeout=settings.vlm_timeout,
-    ).with_structured_output(ImageAnalysis)
+    )
+
+
+@cache
+def _vlm_image() -> Runnable:
+    return _vlm().with_structured_output(ImageAnalysis)
 
 
 @cache
@@ -159,6 +166,17 @@ def _extract_llm_equation() -> Runnable:
         api_key=settings.extract_llm_binding_api_key,
         timeout=settings.extract_llm_timeout,
     ).with_structured_output(EquationAnalysis)
+
+@cache
+def slide_transcription_chain() -> Runnable:
+    """Vision chain for one whole slide: Markdown text that is ingested as ordinary text."""
+    return cached_chain(
+        _chat_prompt("slide_transcription", with_image=True),
+        _vlm() | StrOutputParser(),
+        cache_type="vlm",
+        model_id=settings.vlm_model,
+    )
+
 
 @cache
 def image_analysis_chain() -> Runnable:

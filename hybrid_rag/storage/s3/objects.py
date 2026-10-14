@@ -3,7 +3,7 @@ import hashlib
 import logging
 import mimetypes
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 import boto3
@@ -52,23 +52,26 @@ def figure_key(file_path: str) -> str:
     return f"{settings.s3_prefix.strip('/')}/{stamp}_{short_hash}{ext}"
 
 def upload_figures_to_s3(items: list[dict], max_workers: int = 5) -> None:
-    """Upload every figure crop in parallel and replace its ``img_path`` with the URL."""
+    """Upload every figure in parallel and replace its ``img_path`` with the URL.
+
+    All or nothing: when an upload still fails after boto3's own retries, no
+    ``img_path`` is rewritten and the error is raised. The document then fails at
+    parse and can be retried, instead of being stored with a local path that is
+    gone once the tmp dir is cleaned up.
+    """
     if not items:
         return
     def _put(path: str) -> str:
         key = figure_key(path)
-        with open(path, "rb") as fh:
-            upload_fileobj(fh, key, mimetypes.guess_type(path)[0])
+        try:
+            with open(path, "rb") as fh:
+                upload_fileobj(fh, key, mimetypes.guess_type(path)[0])
+        except Exception as e:
+            raise RuntimeError(f"Upload gambar ke S3 gagal: {Path(path).name}") from e
         return object_url(key)
     get_client()
-    uploaded = 0
     with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as pool:
-        futures = {pool.submit(_put, item["img_path"]): item for item in items}
-        for future in as_completed(futures):
-            item = futures[future]
-            try:
-                item["img_path"] = future.result()
-                uploaded += 1
-            except Exception as e:
-                logger.warning(f"Upload figure ke S3 gagal ({e}); pakai file lokal: {item['img_path']}")
-    logger.info(f"[S3] {uploaded}/{len(items)} figure diupload")
+        urls = list(pool.map(_put, [item["img_path"] for item in items]))
+    for item, url in zip(items, urls):
+        item["img_path"] = url
+    logger.info(f"[S3] {len(items)} figure diupload")

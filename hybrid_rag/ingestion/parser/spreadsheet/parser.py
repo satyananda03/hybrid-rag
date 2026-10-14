@@ -10,7 +10,7 @@ from unstructured.documents.elements import Table
 from html_table_rescuer import TableParser
 from bs4 import BeautifulSoup
 
-from hybrid_rag.ingestion.parser.figures import FIGURE_MAX_PIXELS, cap_image_size, is_large_image
+from hybrid_rag.ingestion.parser.figures import is_large_image, save_for_vlm
 
 
 
@@ -138,13 +138,7 @@ def extract_sheet_assets(filepath, images_dir):
                     continue
                 img_path = img_dir / img_filename
                 with Image.open(io.BytesIO(img_data)) as pil_img:
-                    if max(pil_img.size) > FIGURE_MAX_PIXELS:
-                        cap_image_size(pil_img)
-                        if ext in ("jpg", "jpeg") and pil_img.mode not in ("RGB", "L"):
-                            pil_img = pil_img.convert("RGB")
-                        pil_img.save(str(img_path))
-                    else:
-                        img_path.write_bytes(img_data)
+                    img_path = save_for_vlm(pil_img, img_path, original=img_data)
 
                 # Cari label konteks: nilai terdekat di kiri, lalu di atas
                 label = None

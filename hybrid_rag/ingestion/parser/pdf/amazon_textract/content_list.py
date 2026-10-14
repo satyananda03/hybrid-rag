@@ -5,7 +5,7 @@ import os
 import uuid
 import warnings
 
-from hybrid_rag.ingestion.parser.figures import cap_image_size, is_large_enough
+from hybrid_rag.ingestion.parser.figures import is_large_enough, save_for_vlm
 from .blocks import (
     bbox_iou,
     bbox_to_pixels,
@@ -76,14 +76,11 @@ def _figure_item(bbox: dict, page_idx: int, img_w: int, img_h: int, page_image, 
         max(0, left - pad), max(0, top - pad),
         min(img_w, right + pad), min(img_h, bottom + pad)
     )
-    cropped = cap_image_size(page_image().crop(crop_box))
     fname = f"figure_p{page_idx}_{uuid.uuid4().hex[:8]}.jpg"
     fpath = os.path.join(images_dir, fname) if images_dir else fname
     if images_dir:
         os.makedirs(images_dir, exist_ok=True)
-    if cropped.mode not in ("RGB", "L"):
-        cropped = cropped.convert("RGB")
-    cropped.save(fpath, "JPEG", quality=85)
+    fpath = save_for_vlm(page_image().crop(crop_box), fpath)
     return {
         "type": "image",
         "img_path": os.path.abspath(fpath),

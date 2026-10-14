@@ -1,6 +1,9 @@
 import asyncio
+import io
 import json
+import os
 from pathlib import Path
+import pymupdf
 import pytest
 from docx import Document
 from openpyxl import Workbook
@@ -18,10 +21,12 @@ from hybrid_rag.ingestion.knowledge_graph.ontology_schema import (
     render_schema_for_prompt,
     resolve_ontology_path,
 )
-from hybrid_rag.ingestion.multimodal.content import page_offsets_of
-from hybrid_rag.ingestion.parser.office.parser import parse_docx
+from hybrid_rag.ingestion.multimodal.content import page_offsets_of, separate_content
+from hybrid_rag.ingestion.parser import figures
+from hybrid_rag.ingestion.parser.pdf import slides
+from hybrid_rag.ingestion.parser.office.docx import parse_docx
 from hybrid_rag.ingestion.parser.spreadsheet.parser import parse_xlsx
-from hybrid_rag.ingestion.parser.figures import FIGURE_MAX_PIXELS, cap_image_size
+from hybrid_rag.ingestion.parser.figures import FIGURE_MAX_PIXELS, cap_image_size, save_for_vlm
 from hybrid_rag.storage.s3 import objects as s3_objects
 from hybrid_rag.storage.s3 import require_bucket, upload_figures_to_s3
 
@@ -105,7 +110,7 @@ def test_pdf_goes_through_textract_then_hosting_and_cleans_up(tmp_path, monkeypa
     async def fake_textract(path, output_file):
         seen["path"], seen["tmp_dir"] = path, Path(output_file).parent
         return {"raw": True}
-    monkeypatch.setattr(pipeline.async_amazon_textract, "parse_document_to_json", fake_textract)
+    monkeypatch.setattr(pipeline, "parse_document_to_json", fake_textract)
     monkeypatch.setattr(pipeline, "reconstruct_content_list", lambda raw, output_file: [{"type": "text", "text": "isi"}])
     async def go():
         async with pipeline.parse_file(pdf) as content_list:
@@ -115,14 +120,19 @@ def test_pdf_goes_through_textract_then_hosting_and_cleans_up(tmp_path, monkeypa
     assert seen["path"] == str(pdf) and len(hosted) == 1
     assert not seen["tmp_dir"].exists()
 
-def test_text_and_content_list_files_are_not_hosted(tmp_path, hosted):
+def test_text_files_are_not_hosted(tmp_path, hosted):
     md = tmp_path / "a.md"
     md.write_text("halo", encoding="utf-8")
-    assert parse(md) == [{"type": "text", "text": "halo"}]
+    assert parse(md) == [{"type": "text", "text": "halo"}] and hosted == []
+
+
+def test_content_list_images_are_fitted_then_hosted(tmp_path, hosted, monkeypatch):
+    fitted = []
+    monkeypatch.setattr(pipeline, "fit_figures", lambda content_list, tmp_dir: fitted.append(content_list))
     prebuilt = tmp_path / "a.json"
     prebuilt.write_text(json.dumps([{"type": "image", "img_path": "https://s3/x.jpg"}]), encoding="utf-8")
-    assert parse(prebuilt)[0]["img_path"] == "https://s3/x.jpg"
-    assert hosted == []
+    content_list = parse(prebuilt)
+    assert content_list[0]["img_path"] == "https://s3/x.jpg" and fitted == hosted == [content_list]
 
 
 def test_parse_file_rejects_bad_input(tmp_path):
@@ -148,7 +158,7 @@ class FakeS3Client:
             raise OSError("boom")
         self.puts.append((bucket, key, ExtraArgs["ContentType"]))
 
-def test_figures_get_urls_and_a_failed_upload_keeps_its_local_path(tmp_path, make_png, monkeypatch):
+def test_figures_get_urls_or_the_whole_batch_fails(tmp_path, make_png, monkeypatch):
     client = FakeS3Client()
     monkeypatch.setattr(s3_objects, "get_client", lambda: client)
     monkeypatch.setattr(s3_objects, "figure_key", lambda path: f"figs/{Path(path).name}")
@@ -156,12 +166,15 @@ def test_figures_get_urls_and_a_failed_upload_keeps_its_local_path(tmp_path, mak
     monkeypatch.setattr(settings, "s3_region", "ap-southeast-3")
     ok, bad = make_png("ok.png", (10, 10)), make_png("bad.png", (10, 10))
 
-    items = [{"img_path": str(ok)}, {"img_path": str(bad)}]
+    items = [{"img_path": str(ok)}]
     upload_figures_to_s3(items)
+    assert items == [{"img_path": "https://bkt.s3.ap-southeast-3.amazonaws.com/figs/ok.png"}]
 
-    assert items[0]["img_path"] == "https://bkt.s3.ap-southeast-3.amazonaws.com/figs/ok.png"
-    assert items[1]["img_path"] == str(bad)
-    assert client.puts == [("bkt", "figs/ok.png", "image/png")]
+    # Satu gagal → error, dan tidak ada img_path yang menunjuk ke file lokal yang akan dihapus.
+    items = [{"img_path": str(ok)}, {"img_path": str(bad)}]
+    with pytest.raises(RuntimeError, match="bad.png"):
+        upload_figures_to_s3(items)
+    assert items == [{"img_path": str(ok)}, {"img_path": str(bad)}]
 
 def test_require_bucket_names_the_variable(monkeypatch):
     monkeypatch.setattr(settings, "s3_bucket", None)
@@ -351,3 +364,234 @@ def test_env_example_changes_no_default():
     defaults = RagSettings(_env_file=None)
     # empty values mean "not set": every field must come out as the code default
     assert example.model_dump() == defaults.model_dump()
+
+
+def test_neighbor_text_is_kept_out_of_modal_extraction():
+    from hybrid_rag.ingestion.multimodal.analyze import _NEIGHBOR_TEXT
+    from hybrid_rag.ingestion.multimodal.multimodal_template import TEMPLATES
+
+    content = TEMPLATES["image_chunk"].format(
+        section_path="S", neighbor_text="halaman\n\npanjang", image_path="https://s3/a.jpg",
+        captions="None", footnotes="None", enhanced_caption="Analisis",
+    )
+    stripped = _NEIGHBOR_TEXT.sub("", content)
+    assert "halaman" not in stripped and "Neighbor Text" not in stripped
+    assert "- Section Path: S\nImage Path: https://s3/a.jpg\n" in stripped and "Visual Analysis: Analisis" in stripped
+
+
+# --- slide decks -------------------------------------------------------------------------
+
+def make_pdf(path, sizes):
+    doc = pymupdf.open()
+    for width, height in sizes:
+        doc.new_page(width=width, height=height).insert_text((20, 40), "Timeline Ekraf Kemlu")
+    doc.save(path)
+    return path
+
+
+@pytest.mark.parametrize(
+    "sizes, deck",
+    [
+        ([(1440, 810)] * 3, True),  # 16:9
+        ([(1280, 800)] * 2, True),  # 16:10
+        ([(1440, 810)] * 4 + [(595, 842)], True),  # 80% layar lebar
+        ([(1440, 810)] * 3 + [(595, 842)] * 2, False),  # 60%
+        ([(595, 842)] * 2, False),  # A4 portrait
+        ([(842, 595)] * 2, False),  # A4 landscape
+        ([(792, 612)] * 2, False),  # Letter landscape
+    ],
+)
+def test_slide_decks_are_detected_from_page_shape(tmp_path, sizes, deck):
+    assert slides.is_slide_deck(make_pdf(tmp_path / "a.pdf", sizes)) is deck
+
+
+def test_unreadable_pdf_is_left_to_textract(tmp_path):
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    assert slides.is_slide_deck(pdf) is False
+
+
+class FakeSlideChain:
+    def __init__(self, reply=lambda inputs: f"# Slide {inputs['page_number']}\nTimeline Ekraf Kemlu"):
+        self.reply, self.calls = reply, []
+
+    async def ainvoke(self, inputs):
+        self.calls.append(inputs)
+        return self.reply(inputs)
+
+
+def test_each_slide_becomes_a_text_item_with_its_slide_image(tmp_path, monkeypatch):
+    chain = FakeSlideChain()
+    monkeypatch.setattr(slides, "slide_transcription_chain", lambda: chain)
+    items = asyncio.run(slides.parse_slides(make_pdf(tmp_path / "a.pdf", [(1440, 810)] * 2), tmp_path))
+    assert [(i["type"], i["page_idx"], i["text"].splitlines()[0]) for i in items] == [
+        ("text", 0, "# Slide 1"), ("text", 1, "# Slide 2"),
+    ]
+    assert all(Path(i["img_path"]).is_file() for i in items)
+    assert chain.calls[0]["reference_text"] == "Timeline Ekraf Kemlu"
+    assert chain.calls[0]["image_url"].startswith("data:image/jpeg;base64,")
+
+
+def test_an_empty_transcription_fails_the_document(tmp_path, monkeypatch):
+    monkeypatch.setattr(slides, "slide_transcription_chain", lambda: FakeSlideChain(lambda inputs: "  "))
+    with pytest.raises(RuntimeError, match="slide 1"):
+        asyncio.run(slides.parse_slides(make_pdf(tmp_path / "a.pdf", [(1440, 810)]), tmp_path))
+
+
+def test_coverage_counts_text_layer_words_in_the_transcript():
+    assert slides._coverage("Akhir Juli diajukan PTRI", "# Timeline\n- Akhir Juli: diajukan oleh PTRI NY") == 1.0
+    assert slides._coverage("Akhir Juli diajukan PTRI", "- Akhir Juli") == 0.5
+    assert slides._coverage("", "apa saja") == 1.0
+
+
+def test_slide_decks_skip_textract_and_are_hosted(tmp_path, monkeypatch, hosted):
+    async def fake_textract(path, output_file):
+        raise AssertionError("dek slide tidak boleh ke Textract")
+    async def fake_slides(path, tmp_dir):
+        return [{"type": "text", "text": "slide", "page_idx": 0, "img_path": str(tmp_dir / "slide_0.jpg")}]
+    monkeypatch.setattr(pipeline, "parse_document_to_json", fake_textract)
+    monkeypatch.setattr(pipeline, "parse_slides", fake_slides)
+    content_list = parse(make_pdf(tmp_path / "deck.pdf", [(1440, 810)]))
+    assert [i["text"] for i in content_list] == ["slide"] and hosted == [content_list]
+
+
+def test_host_figures_uploads_exactly_the_items_with_an_image(monkeypatch):
+    uploaded = []
+    monkeypatch.setattr(figures, "upload_figures_to_s3", uploaded.append)
+    content_list = [
+        {"type": "text", "text": "paragraf"},
+        {"type": "image", "img_path": "/tmp/fig.jpg"},
+        {"type": "table", "table_body": "|a|"},
+        {"type": "text", "text": "slide", "img_path": "/tmp/slide_0.jpg"},
+        {"type": "image", "img_path": "https://s3/sudah_di_host.jpg"},
+    ]
+    figures.host_figures(content_list)
+    assert uploaded == [[content_list[1], content_list[3]]]
+
+
+def test_slide_images_reach_page_offsets_and_sidecars():
+    _, _, offsets = separate_content([
+        {"type": "text", "text": "slide satu", "page_idx": 0, "img_path": "https://s3/s0.jpg"},
+        {"type": "text", "text": "slide dua", "page_idx": 1, "img_path": "/tmp/upload_gagal.jpg"},
+    ])
+    assert offsets == [{"page": 0, "start": 0, "image": "https://s3/s0.jpg"}, {"page": 1, "start": 12}]
+    starts = [o["start"] for o in offsets]
+    assert _page_range(offsets, starts, (0, 16)) == {"page_start": 0, "page_end": 1, "images": ["https://s3/s0.jpg"]}
+    assert _page_range(offsets, starts, (12, 16)) == {"page_start": 1, "page_end": 1}
+
+
+def test_documents_without_slides_keep_their_offsets_and_sidecars():
+    text, items, offsets = separate_content([
+        {"type": "text", "text": "isi halaman", "page_idx": 0},
+        {"type": "image", "img_path": "https://s3/fig.jpg", "page_idx": 0},
+        {"type": "table", "table_body": "|a|", "page_idx": 1},
+        {"type": "text", "text": "isi berikutnya", "page_idx": 1},
+    ])
+    assert offsets == [{"page": 0, "start": 0}, {"page": 1, "start": 13}]
+    assert len(items) == 2 and "https://s3/fig.jpg" not in text
+    assert _page_range(offsets, [0, 13], (0, 20)) == {"page_start": 0, "page_end": 1}
+
+
+# --- images sent to the VLM -------------------------------------------------------------
+
+def png_bytes(img):
+    buffer = io.BytesIO()
+    img.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def test_an_embedded_image_that_fits_is_kept_byte_for_byte(tmp_path):
+    original = png_bytes(Image.new("RGB", (900, 600), "red"))
+    with Image.open(io.BytesIO(original)) as img:
+        path = save_for_vlm(img, tmp_path / "a.png", original=original)
+    assert path == tmp_path / "a.png" and path.read_bytes() == original
+
+
+def test_an_oversized_image_is_scaled_to_the_pixel_cap(tmp_path):
+    path = save_for_vlm(Image.new("RGB", (FIGURE_MAX_PIXELS * 2, FIGURE_MAX_PIXELS), "red"), tmp_path / "a.png")
+    assert path.suffix == ".jpg"
+    with Image.open(path) as saved:
+        assert saved.size == (FIGURE_MAX_PIXELS, FIGURE_MAX_PIXELS // 2)
+
+
+def test_an_image_over_the_byte_budget_is_reencoded_until_it_fits(tmp_path, monkeypatch):
+    from hybrid_rag.ingestion.parser import figures as figs
+    monkeypatch.setattr(figs, "FIGURE_MAX_BYTES", 60_000)
+    noise = Image.frombytes("RGB", (800, 800), os.urandom(800 * 800 * 3))  # tidak bisa dikompres
+    original = png_bytes(noise)
+    path = save_for_vlm(noise, tmp_path / "a.png", original=original)
+    assert path.suffix == ".jpg" and path.stat().st_size <= 60_000
+    with Image.open(path) as saved:
+        assert max(saved.size) < 800  # kualitas saja tidak cukup, ukurannya ikut turun
+
+
+def test_transparent_areas_become_white(tmp_path):
+    clear = Image.new("RGBA", (FIGURE_MAX_PIXELS + 10, 20), (0, 0, 0, 0))
+    with Image.open(save_for_vlm(clear, tmp_path / "a.png")) as saved:
+        assert saved.convert("RGB").getpixel((5, 5)) == (255, 255, 255)
+
+
+class FakeResponse:
+    def __init__(self, content):
+        self.content = content
+
+    def raise_for_status(self):
+        pass
+
+
+def test_ready_made_images_are_fitted_only_when_over_the_limits(tmp_path, monkeypatch):
+    small = png_bytes(Image.new("RGB", (800, 600), "red"))
+    big = png_bytes(Image.new("RGB", (FIGURE_MAX_PIXELS * 2, 100), "red"))
+    local = tmp_path / "local.png"
+    local.write_bytes(small)
+    remote = {"https://s3/small.png": small, "https://s3/big.png": big}
+    monkeypatch.setattr(figures.httpx, "get", lambda url, **kwargs: FakeResponse(remote[url]))
+    content_list = [
+        {"type": "text", "text": "paragraf"},
+        {"type": "image", "img_path": "https://s3/small.png"},
+        {"type": "image", "img_path": "https://s3/big.png"},
+        {"type": "image", "img_path": str(local)},
+    ]
+    figures.fit_figures(content_list, tmp_path)
+    assert content_list[1]["img_path"] == "https://s3/small.png"  # URL permanen yang muat tidak diunggah ulang
+    assert content_list[2]["img_path"] == str(tmp_path / "figure_2.jpg")  # di-encode ulang untuk host_figures
+    with Image.open(content_list[2]["img_path"]) as fitted:
+        assert max(fitted.size) == FIGURE_MAX_PIXELS
+    assert content_list[3]["img_path"] == str(local)
+
+
+def test_an_unreadable_ready_made_image_fails_the_document(tmp_path, monkeypatch):
+    monkeypatch.setattr(figures.httpx, "get", lambda url, **kwargs: FakeResponse(b"bukan gambar"))
+    with pytest.raises(RuntimeError, match="https://s3/rusak.png"):
+        figures.fit_figures([{"type": "image", "img_path": "https://s3/rusak.png"}], tmp_path)
+
+
+# --- tokenizer --------------------------------------------------------------------------
+
+SAMPLE = (
+    "Konferensi internasional Creative Economy terbesar di dunia. WCCE ke-5 di Jakarta "
+    "(21-23 Oktober 2026), dihadiri 50+ negara. Dokumen Jakarta Vision on Creative Economy "
+    "masuk menjadi resolusi PBB sebagai dasar menjadikan Ekonomi Kreatif agenda pasca SDGs."
+)
+
+
+def test_the_tokenizer_never_downloads(monkeypatch):
+    import requests
+    from hybrid_rag.core.utils import TiktokenTokenizer
+    monkeypatch.delenv("TIKTOKEN_CACHE_DIR", raising=False)
+    monkeypatch.delenv("DATA_GYM_CACHE_DIR", raising=False)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: pytest.fail("tiktoken mencoba mengunduh"))
+    assert TiktokenTokenizer().encode(SAMPLE)
+
+
+def test_the_shared_tokenizer_counts_exactly_like_tiktoken():
+    import tiktoken
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from hybrid_rag.core.utils import get_tokenizer
+    from hybrid_rag.ingestion.multimodal import content
+    assert get_tokenizer() is get_tokenizer()
+    assert get_tokenizer().encode(SAMPLE) == tiktoken.encoding_for_model("gpt-4o-mini").encode(SAMPLE)
+    reference = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+        model_name="gpt-4o-mini", chunk_size=20, chunk_overlap=0, separators=content._SPLIT_SEPARATORS,
+    )
+    assert content._splitter(20).split_text(SAMPLE) == reference.split_text(SAMPLE)

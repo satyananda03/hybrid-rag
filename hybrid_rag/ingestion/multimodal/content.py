@@ -9,6 +9,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from hybrid_rag.config import settings
 from hybrid_rag.core.chunk_schema import normalize_page
+from hybrid_rag.core.utils import get_tokenizer
 import logging
 
 logger = logging.getLogger(__name__)
@@ -127,26 +128,18 @@ def extract_section_path_from_content_list(
     return " > ".join(text for _, text in heading_chain)
 
 
-#: Model yang sama dengan ``TiktokenTokenizer`` di core/utils, supaya hitungan
-#: token di sini dan di splitter tidak berbeda.
-_TOKEN_MODEL = "gpt-4o-mini"
-
-
-@lru_cache(maxsize=1)
-def _encoding():
-    import tiktoken
-
-    return tiktoken.encoding_for_model(_TOKEN_MODEL)
+def _token_count(text: str) -> int:
+    return len(get_tokenizer().encode(text))
 
 
 @lru_cache(maxsize=4)
 def _splitter(max_tokens: int) -> RecursiveCharacterTextSplitter:
-    """Splitter yang menghitung ukuran dalam token, bukan karakter."""
-    return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-        model_name=_TOKEN_MODEL,
+    """Splitter yang menghitung ukuran dalam token (tokenizer bersama), bukan karakter."""
+    return RecursiveCharacterTextSplitter(
         chunk_size=max_tokens,
         chunk_overlap=0,
         separators=_SPLIT_SEPARATORS,
+        length_function=_token_count,
     )
 
 
@@ -167,7 +160,7 @@ def _take_nearest(blocks: List[str], max_tokens: int, from_end: bool) -> str:
 
     # Dari yang terdekat item ke yang terjauh, berhenti begitu budget habis.
     for block in reversed(blocks) if from_end else blocks:
-        length = len(_encoding().encode(block))
+        length = _token_count(block)
         if used + length <= max_tokens:
             picked.append(block)
             used += length
@@ -282,7 +275,8 @@ def separate_content(
     Returns:
         (text_content, multimodal_items, page_offsets): Pure text content, multimodal
         items list, and ``[{"page": idx, "start": char}]`` — awal tiap halaman di dalam
-        ``text_content`` setelah sanitasi (lihat :func:`page_offsets_of`).
+        ``text_content`` setelah sanitasi (lihat :func:`page_offsets_of`), plus ``"image"``
+        (URL gambar slide) untuk halaman dek slide.
     """
     text_parts = []
     text_pages = []
@@ -317,6 +311,16 @@ def separate_content(
     # Merge all text content
     text_content = "\n\n".join(text_parts)
     page_offsets = page_offsets_of(text_parts, text_pages)
+    # Gambar slide (slides.py) ikut offset halamannya, lalu ke sidecar chunk. Hanya URL:
+    # path lokal (konten yang tidak di-host) tidak bisa dibuka lagi saat retrieval.
+    slide_images = {
+        normalize_page(item.get("page_idx")): item["img_path"]
+        for item in content_list
+        if item.get("type", "text") == "text" and str(item.get("img_path", "")).startswith(("http://", "https://"))
+    }
+    for offset in page_offsets:
+        if offset["page"] in slide_images:
+            offset["image"] = slide_images[offset["page"]]
 
     logger.info("Content separation complete:")
     logger.info(f"  - Text content length: {len(text_content)} characters")

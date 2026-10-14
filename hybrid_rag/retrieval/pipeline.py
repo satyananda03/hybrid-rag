@@ -31,7 +31,8 @@ class RetrievalResult:
     """Raw retrieved context (chunks, entities, relations)."""
     images: List[Dict[str, str]] = field(default_factory=list)
     """Images of the retrieved chunks, in context order: ``{"path", "reference_id"}``,
-    so each can be shown next to its citation ``[reference_id]``. ``reference_id`` is
+    so each can be shown next to its citation ``[reference_id]``. Image chunks come
+    first, then each slide of a slide deck once. ``reference_id`` is
     absent when ``QueryParam.include_citations`` is off."""
     raw_data: Optional[Dict[str, Any]] = None
     """Structured entities / relationships / chunks, when requested."""
@@ -53,11 +54,17 @@ async def _retrieve(
         else None
     )
 
-    images = [
-        {"path": chunk["image_path"], **({"reference_id": chunk["reference_id"]} if chunk.get("reference_id") else {})}
-        for chunk in (result.get("data") or {}).get("chunks") or []
-        if chunk.get("image_path")
-    ]
+    def cited(path: str, chunk: dict) -> Dict[str, str]:
+        return {"path": path, **({"reference_id": chunk["reference_id"]} if chunk.get("reference_id") else {})}
+
+    chunks = (result.get("data") or {}).get("chunks") or []
+    images = [cited(chunk["image_path"], chunk) for chunk in chunks if chunk.get("image_path")]
+    # Gambar slide: satu slide bisa terbawa banyak chunk, jadi sekali saja, dengan sitasi chunk pertamanya.
+    slides: Dict[str, Dict[str, str]] = {}
+    for chunk in chunks:
+        for path in chunk.get("images") or []:
+            slides.setdefault(path, cited(path, chunk))
+    images += slides.values()
     logger.info(f"[retrieve] context_len={len(context)} images_found={len(images)}")
     return RetrievalResult(context=context, images=images, raw_data=raw_data)
 

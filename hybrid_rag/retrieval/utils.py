@@ -323,6 +323,7 @@ def convert_to_user_format(
             "file_path": chunk.get("file_path", "unknown_source"),
             "chunk_id": chunk.get("chunk_id", ""),
             **({"image_path": image.group(1)} if image else {}),
+            **({"images": chunk["images"]} if chunk.get("images") else {}),
         }
         formatted_chunks.append(chunk_data)
 

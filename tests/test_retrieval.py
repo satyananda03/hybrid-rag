@@ -185,3 +185,87 @@ def test_reranker_is_built_from_settings_only_when_fully_configured(model, host,
 
     assert rag.kwargs["rerank_model_func"] == ("rerank-fn" if built else None)
     assert calls == ([(("rr",), {"base_url": "http://rr", "api_key": "rr-key", "timeout": 12.0, "max_retries": 4})] if built else [])
+# --- context rendering ------------------------------------------------------------------
+
+from hybrid_rag.core.constants import GRAPH_FIELD_SEP
+from hybrid_rag.ingestion.multimodal.multimodal_template import TEMPLATES as CHUNK_TEMPLATES
+
+
+def image_content(neighbor):
+    return CHUNK_TEMPLATES["image_chunk"].format(
+        section_path="Timeline", neighbor_text=neighbor, image_path="https://s3/x/a.jpg",
+        captions="None", footnotes="None", enhanced_caption="Pria berpidato.\nTahun 2026.",
+    )
+
+
+def render(chunks, rows, entities=(), originals=None):
+    return asyncio.run(context._build_context_str(
+        list(entities), [], chunks, "q", QueryParam(enable_rerank=False, include_citations=True),
+        {}, entity_id_to_original=originals, text_chunks_db=FakeKV(rows),
+    ))[0]
+
+
+def test_image_neighbor_text_is_dropped_only_when_its_page_is_already_in_context():
+    rows = {"t": {"sidecar": {"page_start": 0, "page_end": 0}}, "i": {"sidecar": {"page_start": 0, "page_end": 0}},
+            "j": {"sidecar": {"page_start": 1, "page_end": 1}}}
+    chunks = [
+        {"chunk_id": "t", "content": "teks halaman satu", "file_path": "f"},
+        {"chunk_id": "i", "content": image_content("Teks\n\ntetangga satu"), "file_path": "f"},
+        {"chunk_id": "j", "content": image_content("Teks tetangga dua"), "file_path": "f"},
+    ]
+    text = render(chunks, rows)
+    assert '<chunk ref_id="1" source="f, hal. 1" type="image" image_url="https://s3/x/a.jpg">' in text
+    assert "tetangga satu" not in text  # page 0 is carried by chunk t
+    assert "Neighbor Text: Teks tetangga dua" in text  # page 1 has no text chunk
+    assert "[Section: Timeline]\n" in text and "Captions" not in text
+    assert "Visual Analysis: Pria berpidato.\nTahun 2026.\n</chunk>" in text
+
+
+def test_kg_lines_are_one_line_and_cite_only_chunks_in_context():
+    rows = {"t": {"sidecar": {"page_start": 0, "page_end": 0}}}
+    entities = [
+        {"entity": "WCCE", "type": "event", "description": f"Konferensi.\n\nKe-5{GRAPH_FIELD_SEP}Di Jakarta"},
+        {"entity": "Lain", "type": "concept", "description": "x"},
+    ]
+    originals = {"WCCE": {"source_id": f"t{GRAPH_FIELD_SEP}gone"}, "Lain": {"source_id": "gone"}}
+    text = render([{"chunk_id": "t", "content": "t", "file_path": "f"}], rows, entities, originals)
+    assert "- **WCCE** (event): Konferensi. Ke-5 Di Jakarta [Ref: 1]\n" in text
+    assert "- **Lain** (concept): x\n" in text
+    assert GRAPH_FIELD_SEP not in text
+    assert text.rstrip().endswith("<references>\n[1] f, hal. 1\n</references>\n</context>")
+
+
+# --- slide images -----------------------------------------------------------------------
+
+SLIDE_ROWS = {
+    "s1": {"sidecar": {"page_start": 0, "page_end": 0, "images": ["https://s3/slide_0.jpg"]}},
+    "s2": {"sidecar": {"page_start": 0, "page_end": 1, "images": ["https://s3/slide_0.jpg", "https://s3/slide_1.jpg"]}},
+}
+SLIDE_CHUNKS = [{"chunk_id": c, "content": c, "file_path": "deck.pdf"} for c in ("s1", "s2")]
+
+
+def test_slide_images_follow_the_stored_sidecar():
+    chunks = asyncio.run(context._attach_sources(
+        SLIDE_CHUNKS, FakeKV(SLIDE_ROWS), return_parent=False, include_citations=True, limit=None,
+    ))
+    assert [c["images"] for c in chunks] == [SLIDE_ROWS[c]["sidecar"]["images"] for c in ("s1", "s2")]
+    assert all("images" not in c for c in attach(FakeKV(ROWS), return_parent=False, include_citations=True))
+
+
+def test_each_slide_is_shown_once_with_the_citation_of_its_first_chunk():
+    class SlideRag:
+        async def aretrieve(self, query, param):
+            text, data = await context._build_context_str(
+                [], [], SLIDE_CHUNKS + [IMAGE_CHUNK], "q", QueryParam(enable_rerank=False), {},
+                text_chunks_db=FakeKV({**SLIDE_ROWS, **ROWS}),
+            )
+            return {**data, "context": text}
+
+    result = asyncio.run(_retrieve(SlideRag(), "q", QueryParam(), include_raw_data=True))
+    refs = {c["chunk_id"]: c["reference_id"] for c in result.raw_data["data"]["chunks"]}
+    assert result.images == [
+        {"path": "https://s3/x/fig.jpg?sig=1", "reference_id": refs["c3"]},
+        {"path": "https://s3/slide_0.jpg", "reference_id": refs["s1"]},
+        {"path": "https://s3/slide_1.jpg", "reference_id": refs["s2"]},
+    ]
+    assert f'[{refs["s1"]}] deck.pdf, hal. 1\n' in result.context

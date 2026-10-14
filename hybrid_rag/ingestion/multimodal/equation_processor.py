@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 # Import prompt templates
 from hybrid_rag.ingestion.multimodal.base_processor import BaseModalProcessor
-from hybrid_rag.ingestion.multimodal.vlm import equation_analysis_chain
+from hybrid_rag.ingestion.multimodal.chain import equation_analysis_chain
 from hybrid_rag.ingestion.multimodal.content import get_equation_text_and_format
 
 logger = logging.getLogger(__name__)

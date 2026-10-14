@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 # Import prompt templates
 from hybrid_rag.core.llm_cache import CACHE_CHUNK_ID, CACHE_KEYS, CACHE_KV
-from hybrid_rag.ingestion.multimodal.vlm import (
+from hybrid_rag.ingestion.multimodal.chain import (
     ImageAnalysis,
     TableAnalysis,
     EquationAnalysis,

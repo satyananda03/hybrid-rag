@@ -20,6 +20,7 @@ by the pipeline — this module only orchestrates them.
 import asyncio
 import contextlib
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -39,6 +40,9 @@ from hybrid_rag.ingestion.multimodal.content import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Teks tetangga sudah diekstrak lewat text chunk biasa; ekstraksi chunk gambar cukup analisisnya.
+_NEIGHBOR_TEXT = re.compile(r"- Neighbor Text: .*?\n(?=Image Path: )", re.S)
 
 
 class MultimodalAnalysisError(RuntimeError):
@@ -610,7 +614,7 @@ class _AnalyzeMixin:
 
         # Same extractor as the text chunks
         chunk_results = await extract_entities(
-            chunks=modal_chunks,
+            chunks={k: {**c, "content": _NEIGHBOR_TEXT.sub("", c["content"])} for k, c in modal_chunks.items()},
             global_config={**self._build_global_config(), "kg_ontology": ontology},
             pipeline_status=pipeline_status,
             pipeline_status_lock=pipeline_status_lock,

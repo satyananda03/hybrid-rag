@@ -1,7 +1,9 @@
-"""Orkestrasi PDF → raw JSON Textract mode async: StartDocumentAnalysis + polling GetDocumentAnalysis."""
+"""Textract mode async: satu job StartDocumentAnalysis lewat S3 + polling GetDocumentAnalysis.
+
+Menghasilkan halaman berbentuk sama dengan ``analyze_page`` (sync); dipanggil dari ``parse``.
+"""
 import asyncio
 import io
-import os
 import random
 import time
 import uuid
@@ -10,13 +12,11 @@ from hybrid_rag.config import settings
 import logging
 from hybrid_rag import progress
 from hybrid_rag.storage.s3 import delete_object, require_bucket, upload_fileobj
-from ..amazon_textract.pages import RENDER_DPI
-from ..amazon_textract.quality import check_effective_dpi
-from ..amazon_textract.textract_api import TextractPageError, get_client
+from .pages import RENDER_DPI
+from .textract_api import FEATURE_TYPES, get_client
 
 logger = logging.getLogger(__name__)
 
-FEATURE_TYPES = ["LAYOUT", "TABLES"]
 POLL_FIRST_S = 2.0
 POLL_MAX_S = 20.0  # 50 job / 20 s = 2,5 TPS polling; sisa kuota Get 5 TPS untuk ambil hasil
 POLL_TIMEOUT_S = 30 * 60
@@ -137,43 +137,17 @@ async def _run_job(pdf_bytes: bytes, n_pages: int) -> tuple[dict, list]:
             logger.warning(f"[Textract] Gagal menghapus input S3 {key}", exc_info=True)
 
 
-async def parse_document_to_json(file_path: str, output_file: str = "raw_output.json") -> dict:
-    """Pipeline PDF -> raw Output JSON via Textract async.
-
-    ``output_file`` only places the working directory: the figure crops go to
-    ``images/`` next to it.
-    """
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"❌ File tidak ditemukan: {file_path}")
+async def analyze_job(file_path: str) -> list:
+    """Blocks per halaman lewat satu job async; antre bila slot job Textract penuh."""
     if settings.textract_region != settings.resolved_s3_region:
         raise ValueError(
             f"Textract async wajib satu region dengan bucket S3: "
             f"TEXTRACT_REGION={settings.textract_region}, S3_REGION={settings.resolved_s3_region}"
         )
-
-    await asyncio.to_thread(check_effective_dpi, file_path)
-
-    output_file = os.path.abspath(output_file)
-    tmp_dir = os.path.dirname(output_file)
-    os.makedirs(tmp_dir, exist_ok=True)
-    images_dir = os.path.join(tmp_dir, "images")
-    os.makedirs(images_dir, exist_ok=True)
-
     pdf_bytes, sizes = await asyncio.to_thread(_normalized_pdf, file_path)
     slots = _slots()
     if slots.locked():
         progress.activity("Menunggu antrean Textract")
     async with slots:
         first, blocks = await _run_job(pdf_bytes, len(sizes))
-
-    raw_pages = _raw_pages(first, blocks, sizes)
-    raw_data = {
-        "source_pdf": os.path.abspath(file_path),
-        "images_dir": images_dir,
-        "pages": raw_pages,
-    }
-
-    failed_pages = [p for p in raw_pages if p["error"]]
-    if failed_pages:
-        raise TextractPageError(failed_pages)
-    return raw_data
+    return _raw_pages(first, blocks, sizes)

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 # Import prompt templates
 from hybrid_rag.ingestion.multimodal.base_processor import BaseModalProcessor
-from hybrid_rag.ingestion.multimodal.vlm import image_analysis_chain
+from hybrid_rag.ingestion.multimodal.chain import image_analysis_chain
 from hybrid_rag.ingestion.multimodal.content import encode_image_to_base64
 
 logger = logging.getLogger(__name__)
@@ -70,9 +70,6 @@ class ImageModalProcessor(BaseModalProcessor):
                 f"No image path provided in modal_content: {modal_content}"
             )
 
-        # URL (S3) dikirim apa adanya — VLM yang menarik gambarnya, tidak
-        # ada file temporary yang dibaca di sini. File lokal (sumber non-S3
-        # atau upload S3 yang gagal) tetap jalan lewat data URI.
         if image_path.startswith(("http://", "https://")):
             image_url = image_path
         else:

@@ -3,12 +3,15 @@ import bisect
 import html
 import inspect
 import logging
+import os
 import re
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from hashlib import md5
+from pathlib import Path
 from typing import (
     Annotated,
     Any,
@@ -393,34 +396,26 @@ class Tokenizer:
         return self.tokenizer.decode(tokens)
 
 
+# BPE o200k_base (encoding gpt-4o-mini) ikut di paket, dinamai sesuai format cache
+# tiktoken (SHA-1 URL-nya), jadi tidak pernah diunduh dan tidak perlu di-mount.
+_TIKTOKEN_CACHE = Path(__file__).with_name("tiktoken_cache")
+
+
 class TiktokenTokenizer(Tokenizer):
-    """
-    A Tokenizer implementation using the tiktoken library.
-    """
+    """Penghitung token o200k_base untuk semua anggaran token; BPE-nya dibaca dari paket."""
 
-    def __init__(self, model_name: str = "gpt-4o-mini"):
-        """
-        Initializes the TiktokenTokenizer with a specified model name.
+    def __init__(self):
+        # TIKTOKEN_CACHE_DIR milik user tetap menang; tiktoken sendiri memverifikasi hash file-nya.
+        os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(_TIKTOKEN_CACHE))
+        import tiktoken
 
-        Args:
-            model_name: The model name for the tiktoken tokenizer to use.  Defaults to "gpt-4o-mini".
+        super().__init__(model_name="gpt-4o-mini", tokenizer=tiktoken.get_encoding("o200k_base"))
 
-        Raises:
-            ImportError: If tiktoken is not installed.
-            ValueError: If the model_name is invalid.
-        """
-        try:
-            import tiktoken
-        except ImportError:
-            raise ImportError(
-                "tiktoken is not installed. Please install it with `pip install tiktoken` or define custom `tokenizer_func`."
-            )
 
-        try:
-            tokenizer = tiktoken.encoding_for_model(model_name)
-            super().__init__(model_name=model_name, tokenizer=tokenizer)
-        except KeyError:
-            raise ValueError(f"Invalid model_name: {model_name}.")
+@lru_cache(maxsize=1)
+def get_tokenizer() -> Tokenizer:
+    """Satu tokenizer per proses: ingestion, retrieval, dan multimodal menghitung dengan encoder yang sama."""
+    return TiktokenTokenizer()
 
 
 def split_string_by_multi_markers(content: str, markers: list[str]) -> list[str]:

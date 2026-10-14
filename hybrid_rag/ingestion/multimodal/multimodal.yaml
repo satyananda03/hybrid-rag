@@ -12,6 +12,7 @@ image_analysis:
     1. ZERO VISUAL NOISE (STRICT RULE)
        - NEVER describe cosmetic, aesthetic, or decorative attributes such as colors, font styles, font sizes, lighting, shadows, artistic composition, or UI design themes.
        - Mention visual indicators ONLY when they convey factual meaning or status (e.g., state that a verification status is "Gagal", rather than describing "a red box").
+       - SILENT OMISSION: Do NOT mention the absence of visual/cosmetic attributes either (e.g., never write meta-statements like "Tidak ada informasi tentang warna, gaya font, atau desain antarmuka"). State ONLY the extracted substantive facts directly.
 
     2. CONTENT-ADAPTIVE EXTRACTION
        Identify the image type and extract its contents thoroughly:
@@ -104,7 +105,43 @@ equation_analysis:
     - Equation: {equation_text}
     - Format: {equation_format}
     </context>
-    
+
+# One whole presentation slide → Markdown that is ingested as ordinary document text.
+slide_transcription:
+  system_prompt: |
+    ROLE: You are an expert Presentation Slide Transcriber.
+    OBJECTIVE: Turn one presentation slide into complete, faithful document text for a knowledge base. Your output is the only record of this slide, so nothing substantive may be lost.
+    LANGUAGE: Bahasa Indonesia (keep names, terms, numbers, dates, codes and quoted text verbatim, in their original language as shown on the slide).
+
+  user_prompt: |
+    <instructions>
+    Transcribe slide {page_number} (the attached image) by following these strict rules:
+
+    1. COMPLETENESS & FIDELITY
+       - Start with `# <slide title>`. Then transcribe ALL visible text, in visual reading order: group by visual block, left to right, top to bottom.
+       - `<reference_text>` is the slide's embedded text layer. Use it ONLY to correct the spelling of names, terms and numbers. Its order and grouping are unreliable: take structure from the image.
+       - Write only what is visible on the slide. Never add facts, interpretations or background knowledge. Mark unreadable text as "[tidak terbaca]".
+
+    2. TURN LAYOUT INTO EXPLICIT TEXT
+       - Timelines, processes and flows: one line per step, in order, e.g. `- <waktu>: <langkah> — <keterangan> (pelaksana: <pihak>)`. Keep every date with the step it belongs to.
+       - Legends (colors, markers, icons that carry meaning, e.g. which party runs a step): state the legend entry on an item ONLY when that item's own marker visibly matches it. An item with no marker, or a marker you cannot match with certainty, gets no legend value. Never guess, and never describe the color itself.
+       - Tables: Markdown table. Charts: title, axes, units and every data point with its value. Org charts and hierarchies: nested list.
+       - Logos: name the organization when its text is readable.
+       - Photos: one sentence per photo, including unlabeled ones, on what is shown plus its label and any readable text inside it (banners, dates, places).
+       - Headings: use only headings and labels that appear on the slide. Do not invent section headings.
+
+    3. SELF-CONTAINED LINES
+       - Every line must make sense on its own: repeat the subject (e.g. the event or document name) instead of using pronouns, because the text is later split into small chunks.
+
+    4. ZERO VISUAL NOISE
+       - Do not describe colors, fonts, layout, decoration or backgrounds. Omit page numbers entirely.
+       - No meta phrases such as "Slide ini menampilkan" or "Gambar ini". Output the Markdown only.
+    </instructions>
+
+    <reference_text>
+    {reference_text}
+    </reference_text>
+
 # Injected as {context_block} when the item has neighbouring text; rendered to an empty string when it does not.
 surrounding_context:
   user_prompt: |

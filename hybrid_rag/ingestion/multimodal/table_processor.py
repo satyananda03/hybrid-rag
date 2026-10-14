@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 # Import prompt templates
 from hybrid_rag.ingestion.multimodal.base_processor import BaseModalProcessor
-from hybrid_rag.ingestion.multimodal.vlm import table_analysis_chain
+from hybrid_rag.ingestion.multimodal.chain import table_analysis_chain
 from hybrid_rag.ingestion.multimodal.content import (
     format_table_body,
     get_table_body,

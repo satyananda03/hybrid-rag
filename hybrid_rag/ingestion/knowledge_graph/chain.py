@@ -15,7 +15,7 @@ is the same for every ontology — only the system prompt and output model diffe
 
 Each chain talks to its own role binding (``EXTRACT_*``), falling back to the
 base LLM settings. Models come from ``hybrid_rag.providers`` and are built on
-first use. The VLM chains live in ``multimodal/vlm.py``.
+first use. The VLM chains live in ``multimodal/chain.py``.
 """
 
 
