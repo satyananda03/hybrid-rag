@@ -24,24 +24,22 @@ from hybrid_rag.core.base import (
     StorageNameSpace,
     StoragesStatus,
 )
-from hybrid_rag.core.namespace import NameSpace
+from hybrid_rag.core.constants import NameSpace
 from hybrid_rag.ingestion.knowledge_graph.extraction import (
     extract_entities,
 )
 from hybrid_rag.core.exceptions import IndexFlushError
-from hybrid_rag.core.utils import (
-    Tokenizer,
-    get_tokenizer,
-    EmbeddingFunc,
-    normalize_source_ids_limit_method,
-)
+from hybrid_rag.core.tokenizer import Tokenizer, get_tokenizer
+from hybrid_rag.core.embedding import EmbeddingFunc
+from hybrid_rag.core.source_ids import normalize_source_ids_limit_method
 import logging
 
 from hybrid_rag.config import settings
-from hybrid_rag.ingestion.worker import _PipelineMixin
+from hybrid_rag.ingestion.pipeline import _PipelineMixin
 from hybrid_rag.storage.neo4j import Neo4JStorage
 from hybrid_rag.storage.postgres import PGDocStatusStorage, PGKVStorage, PGVectorStorage
 from hybrid_rag.ingestion.deletion.deletion import _DeletionMixin
+from hybrid_rag.ingestion.knowledge_graph.purge import _PurgeMixin
 from hybrid_rag.ingestion.insert import _IngestionMixin
 from hybrid_rag.ingestion.multimodal.analyze import _AnalyzeMixin
 from hybrid_rag.ingestion.multimodal.equation_processor import (
@@ -63,6 +61,7 @@ class IngestionRAG(
     _PipelineMixin,
     _IngestionMixin,
     _AnalyzeMixin,
+    _PurgeMixin,
     _DeletionMixin,
 ):
     """Graph + vector RAG over PostgreSQL and Neo4j, with multimodal ingestion.
@@ -601,31 +600,3 @@ class IngestionRAG(
 
         log_message = "In memory DB persist to disk"
         logger.info(log_message)
-
-
-    async def _get_existing_llm_cache_ids(self, cache_ids: list[str]) -> list[str]:
-        """Return cache IDs that still exist in cache storage.
-
-        Some KV storage backends only log delete failures and return without
-        raising, so callers must verify which records still exist after delete.
-
-        Returns an empty list immediately if cache storage is unavailable.
-        Callers must check storage availability independently before treating
-        an empty result as a confirmed deletion.
-        """
-        if not self.llm_response_cache or not cache_ids:
-            return []
-
-        try:
-            existing_records = await self.llm_response_cache.get_by_ids(cache_ids)
-        except Exception as verification_error:
-            raise Exception(
-                f"Failed to verify LLM cache deletion "
-                f"(delete may have succeeded): {verification_error}"
-            ) from verification_error
-        return [
-            cache_id
-            for cache_id, record in zip(cache_ids, existing_records)
-            if record is not None
-        ]
-

@@ -13,9 +13,10 @@ from hybrid_rag.storage.neo4j import Neo4JStorage
 from hybrid_rag.storage.postgres import PGKVStorage, PGVectorStorage
 from hybrid_rag.core.base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage, StoragesStatus
 from hybrid_rag.retrieval.types import QueryParam
-from hybrid_rag.core.namespace import NameSpace
+from hybrid_rag.core.constants import NameSpace
 from hybrid_rag.retrieval.query import kg_query
-from hybrid_rag.core.utils import Tokenizer, EmbeddingFunc, get_tokenizer
+from hybrid_rag.core.tokenizer import Tokenizer, get_tokenizer
+from hybrid_rag.core.embedding import EmbeddingFunc
 from hybrid_rag.config import settings
 from hybrid_rag.core.types import KnowledgeGraph
 import logging

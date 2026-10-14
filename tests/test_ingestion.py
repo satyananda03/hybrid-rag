@@ -12,7 +12,7 @@ from PIL import Image
 from hybrid_rag import progress
 from hybrid_rag.config import RagSettings, settings
 from hybrid_rag.core.chunk_schema import format_location, normalize_page
-from hybrid_rag.ingestion import pipeline
+from hybrid_rag.ingestion.parser import router
 from hybrid_rag.ingestion.chunking.parent_child import _page_range
 from hybrid_rag.ingestion.knowledge_graph.chain import get_kg_chains
 from hybrid_rag.ingestion.knowledge_graph.ontology_schema import (
@@ -83,20 +83,20 @@ def test_cap_image_size_downscales_only_images_exceeding_max_pixels():
 
 def parse(path):
     async def go():
-        async with pipeline.parse_file(path) as content_list:
+        async with router.parse_file(path) as content_list:
             return content_list
     return asyncio.run(go())
 
 @pytest.fixture
 def hosted(monkeypatch):
     calls = []
-    monkeypatch.setattr(pipeline, "host_figures", calls.append)
+    monkeypatch.setattr(router, "host_figures", calls.append)
     return calls
 
 def test_supported_extensions_follow_the_routing_table():
-    assert pipeline.SUPPORTED_INGEST_EXTENSIONS == frozenset(pipeline.PARSERS)
-    assert {"pdf", "docx", "xlsx", "md", "txt", "json"} <= pipeline.SUPPORTED_INGEST_EXTENSIONS
-    assert not {"pptx", "doc", "odt", "rtf"} & pipeline.SUPPORTED_INGEST_EXTENSIONS
+    assert router.SUPPORTED_INGEST_EXTENSIONS == frozenset(router.PARSERS)
+    assert {"pdf", "docx", "xlsx", "md", "txt", "json"} <= router.SUPPORTED_INGEST_EXTENSIONS
+    assert not {"pptx", "doc", "odt", "rtf"} & router.SUPPORTED_INGEST_EXTENSIONS
 
 @pytest.mark.parametrize("name", ["a.docx", "a.xlsx"])
 def test_office_files_are_parsed_then_hosted(name, docx_path, xlsx_path, hosted):
@@ -110,10 +110,10 @@ def test_pdf_goes_through_textract_then_hosting_and_cleans_up(tmp_path, monkeypa
     async def fake_textract(path, output_file):
         seen["path"], seen["tmp_dir"] = path, Path(output_file).parent
         return {"raw": True}
-    monkeypatch.setattr(pipeline, "parse_document_to_json", fake_textract)
-    monkeypatch.setattr(pipeline, "reconstruct_content_list", lambda raw, output_file: [{"type": "text", "text": "isi"}])
+    monkeypatch.setattr(router, "parse_document_to_json", fake_textract)
+    monkeypatch.setattr(router, "reconstruct_content_list", lambda raw, output_file: [{"type": "text", "text": "isi"}])
     async def go():
-        async with pipeline.parse_file(pdf) as content_list:
+        async with router.parse_file(pdf) as content_list:
             assert seen["tmp_dir"].exists()  # still there while the caller inserts
             return content_list
     assert asyncio.run(go()) == [{"type": "text", "text": "isi"}]
@@ -128,7 +128,7 @@ def test_text_files_are_not_hosted(tmp_path, hosted):
 
 def test_content_list_images_are_fitted_then_hosted(tmp_path, hosted, monkeypatch):
     fitted = []
-    monkeypatch.setattr(pipeline, "fit_figures", lambda content_list, tmp_dir: fitted.append(content_list))
+    monkeypatch.setattr(router, "fit_figures", lambda content_list, tmp_dir: fitted.append(content_list))
     prebuilt = tmp_path / "a.json"
     prebuilt.write_text(json.dumps([{"type": "image", "img_path": "https://s3/x.jpg"}]), encoding="utf-8")
     content_list = parse(prebuilt)
@@ -339,7 +339,7 @@ def test_reranker_is_none_without_a_host_hook(monkeypatch):
 
 
 def test_embedding_func_builds_its_client_from_settings(recorded_hooks, monkeypatch):
-    from hybrid_rag.core.embedding import build_embedding_func
+    from hybrid_rag.providers import build_embedding_func
 
     monkeypatch.setattr(settings, "embedding_model", "emb-model")
     monkeypatch.setattr(settings, "embedding_binding_host", "http://emb")
@@ -449,8 +449,8 @@ def test_slide_decks_skip_textract_and_are_hosted(tmp_path, monkeypatch, hosted)
         raise AssertionError("dek slide tidak boleh ke Textract")
     async def fake_slides(path, tmp_dir):
         return [{"type": "text", "text": "slide", "page_idx": 0, "img_path": str(tmp_dir / "slide_0.jpg")}]
-    monkeypatch.setattr(pipeline, "parse_document_to_json", fake_textract)
-    monkeypatch.setattr(pipeline, "parse_slides", fake_slides)
+    monkeypatch.setattr(router, "parse_document_to_json", fake_textract)
+    monkeypatch.setattr(router, "parse_slides", fake_slides)
     content_list = parse(make_pdf(tmp_path / "deck.pdf", [(1440, 810)]))
     assert [i["text"] for i in content_list] == ["slide"] and hosted == [content_list]
 
@@ -577,7 +577,7 @@ SAMPLE = (
 
 def test_the_tokenizer_never_downloads(monkeypatch):
     import requests
-    from hybrid_rag.core.utils import TiktokenTokenizer
+    from hybrid_rag.core.tokenizer import TiktokenTokenizer
     monkeypatch.delenv("TIKTOKEN_CACHE_DIR", raising=False)
     monkeypatch.delenv("DATA_GYM_CACHE_DIR", raising=False)
     monkeypatch.setattr(requests, "get", lambda *a, **k: pytest.fail("tiktoken mencoba mengunduh"))
@@ -587,7 +587,7 @@ def test_the_tokenizer_never_downloads(monkeypatch):
 def test_the_shared_tokenizer_counts_exactly_like_tiktoken():
     import tiktoken
     from langchain_text_splitters import RecursiveCharacterTextSplitter
-    from hybrid_rag.core.utils import get_tokenizer
+    from hybrid_rag.core.tokenizer import get_tokenizer
     from hybrid_rag.ingestion.multimodal import content
     assert get_tokenizer() is get_tokenizer()
     assert get_tokenizer().encode(SAMPLE) == tiktoken.encoding_for_model("gpt-4o-mini").encode(SAMPLE)
@@ -595,3 +595,18 @@ def test_the_shared_tokenizer_counts_exactly_like_tiktoken():
         model_name="gpt-4o-mini", chunk_size=20, chunk_overlap=0, separators=content._SPLIT_SEPARATORS,
     )
     assert content._splitter(20).split_text(SAMPLE) == reference.split_text(SAMPLE)
+
+
+def test_normalize_string_list_drops_non_strings_without_crashing():
+    from hybrid_rag.core.utils import normalize_string_list
+
+    assert normalize_string_list(["a", 1, "", None, "b"], context="t") == ["a", "b"]
+    assert normalize_string_list("not a list") == []
+
+
+def test_ingestion_rag_keeps_purge_and_delete_methods():
+    # The resume path (pipeline.py) and delete_document call these by name; no test runs either path.
+    from hybrid_rag.ingestion.rag import IngestionRAG
+
+    for name in ("_chunk_ids_from_storage", "_purge_doc_chunks_and_kg", "adelete_by_doc_id", "_get_existing_llm_cache_ids"):
+        assert callable(getattr(IngestionRAG, name)), name

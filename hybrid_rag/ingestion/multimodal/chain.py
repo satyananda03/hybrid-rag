@@ -19,7 +19,7 @@ from hybrid_rag import providers
 from hybrid_rag.config import settings
 from hybrid_rag.core.llm_cache import cached_chain
 from hybrid_rag.core.prompts import load_prompt
-from hybrid_rag.core.utils import Prose
+from hybrid_rag.ingestion.text_cleaning import Prose
 
 MULTIMODAL_PROMPTS_PATH = Path(__file__).resolve().parent / "multimodal.yaml"
 

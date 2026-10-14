@@ -9,14 +9,12 @@ here, in one place, and cannot drift from what the parser expects.
 
 
 import json
-from typing import Annotated, Any
+from typing import Any
 
-from pydantic import AfterValidator, BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
-from hybrid_rag.core.utils import repair_vlm_json_escape_damage
+from hybrid_rag.ingestion.text_cleaning import Prose
 
-
-Prose = Annotated[str, AfterValidator(repair_vlm_json_escape_damage)]
 
 class ExtractedEntity(BaseModel):
     name: str = Field(description="Entity name in title case.")

@@ -6,9 +6,8 @@ from typing import (
     Any,
     Literal,
     TypedDict,
-    TypeVar,
 )
-from .utils import EmbeddingFunc
+from .embedding import EmbeddingFunc
 from .types import KnowledgeGraph
 
 def collection_suffix(model_name: str | None, embedding_dim: int) -> str | None:
@@ -29,8 +28,6 @@ class TextChunkSchema(TypedDict):
     full_doc_id: str
     chunk_order_index: int
 
-
-T = TypeVar("T")
 
 
 @dataclass
@@ -470,22 +467,6 @@ class DocProcessingStatus:
 @dataclass
 class DocStatusStorage(BaseKVStorage, ABC):
     """Base class for document status storage"""
-
-    @staticmethod
-    def resolve_status_filter_values(
-        status_filter: DocStatus | None = None,
-        status_filters: list[DocStatus] | None = None,
-    ) -> set[str] | None:
-        """Normalize single- and multi-status filters into comparable values.
-
-        `status_filters` takes precedence over `status_filter`. Empty multi-status
-        filters are treated as no filter for backward-compatible request handling.
-        """
-        if status_filters:
-            return {status.value for status in status_filters}
-        if status_filter is not None:
-            return {status_filter.value}
-        return None
 
     @abstractmethod
     async def get_docs_by_statuses(

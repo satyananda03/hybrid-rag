@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from hybrid_rag.config import settings
-from hybrid_rag.core.embedding import build_embedding_func
+from hybrid_rag.providers import build_embedding_func
 from hybrid_rag.ingestion.rag import IngestionRAG
 
 logger = logging.getLogger(__name__)

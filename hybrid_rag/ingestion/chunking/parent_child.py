@@ -12,11 +12,9 @@ from functools import cache
 from hybrid_rag import providers
 from hybrid_rag.config import NOVA_MODELS, settings
 from hybrid_rag.core.constants import GRAPH_FIELD_SEP
-from hybrid_rag.core.utils import (
-    Tokenizer,
-    _normalized_child_offsets,
-    raise_first_failure,
-)
+from hybrid_rag.core.tokenizer import Tokenizer
+from hybrid_rag.ingestion.token_limit import _normalized_child_offsets
+from hybrid_rag.ingestion.utils import raise_first_failure
 import logging
 
 logger = logging.getLogger(__name__)
@@ -319,7 +317,7 @@ def redirect_source_ids(
     Args:
         chunk_results: List of (maybe_nodes, maybe_edges) from _process_extract_entities.
         parent_to_child_map: ``{parent_chunk_key: [child_chunk_keys]}``, dibangun
-            di worker dari ``parent_index`` tiap child (lihat worker.py).
+            di worker dari ``parent_index`` tiap child (lihat pipeline.py).
     """
     redirected_count = 0
 

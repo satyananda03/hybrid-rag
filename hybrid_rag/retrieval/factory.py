@@ -11,7 +11,7 @@ in ``keywords/chain.py``, rerank and embedding here.
 
 from hybrid_rag import providers
 from hybrid_rag.config import settings
-from hybrid_rag.core.embedding import build_embedding_func
+from hybrid_rag.providers import build_embedding_func
 from hybrid_rag.retrieval.rag import RetrievalRAG
 
 

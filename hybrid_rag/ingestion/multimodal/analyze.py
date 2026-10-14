@@ -26,7 +26,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from hybrid_rag.core.chunk_schema import format_location, normalize_page
-from hybrid_rag.core.utils import compute_mdhash_id, raise_first_failure
+from hybrid_rag.core.utils import compute_mdhash_id
+from hybrid_rag.ingestion.utils import raise_first_failure
 from hybrid_rag.storage.shared import get_storage_keyed_lock
 from hybrid_rag.config import settings
 import logging
@@ -606,7 +607,7 @@ class _AnalyzeMixin:
         )
         from hybrid_rag.ingestion.knowledge_graph.extraction import extract_entities
 
-        # This workspace's pipeline status, as on the text side (worker.py):
+        # This workspace's pipeline status, as on the text side (pipeline.py):
         # without the workspace these resolve to the *default* workspace's, so a
         # cancel in this workspace would not reach its multimodal extraction.
         pipeline_status = await get_namespace_data("pipeline_status", workspace=self.workspace)

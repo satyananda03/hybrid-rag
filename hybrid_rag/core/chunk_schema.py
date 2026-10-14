@@ -28,7 +28,7 @@ from typing import Any, TYPE_CHECKING
 from hybrid_rag.core.constants import DEFAULT_HEADING_LEVEL_MAX_CHARS
 
 if TYPE_CHECKING:
-    from hybrid_rag.core.utils import Tokenizer
+    from hybrid_rag.core.tokenizer import Tokenizer
 
 
 # Separator joining heading levels into a single breadcrumb line. Shared so the

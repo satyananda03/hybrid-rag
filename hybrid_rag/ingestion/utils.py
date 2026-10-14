@@ -1,25 +1,14 @@
-
 """Ingestion-side helpers — used while a document is being written."""
 
-
-from typing import Any, Iterable, Sequence, TYPE_CHECKING
+import asyncio
+import logging
+import time
+import uuid
+from datetime import datetime
+from typing import Callable, NoReturn, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from hybrid_rag.core.base import BaseKVStorage
-from hybrid_rag.core.constants import (
-    SOURCE_IDS_LIMIT_METHOD_FIFO,
-)
-from hybrid_rag.core.utils import (
-    Tokenizer,
-    _CONTROL_CHAR_PATTERN_ALL,
-    _SURROGATE_PATTERN,
-    _child_source_span,
-    normalize_extracted_info,
-    normalize_source_ids_limit_method,
-    sanitize_text_for_encoding,
-    split_text_by_token_limit,
-)
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -30,78 +19,6 @@ def pack_user_ass_to_openai_messages(*args: str):
         {"role": roles[i % 2], "content": content} for i, content in enumerate(args)
     ]
 
-def enforce_chunk_token_limit_before_embedding(
-    chunking_result: list[dict[str, Any]] | tuple[dict[str, Any], ...],
-    tokenizer: Tokenizer,
-    max_tokens: int,
-) -> list[dict[str, Any]]:
-    """Hard fallback split before embedding while preserving heading hierarchy."""
-    if max_tokens <= 0:
-        return list(chunking_result)
-
-    normalized: list[dict[str, Any]] = []
-
-    for dp in chunking_result:
-        if not isinstance(dp, dict):
-            continue
-
-        content = dp.get("content", "")
-        if not isinstance(content, str) or not content.strip():
-            continue
-
-        try:
-            token_count = len(tokenizer.encode(content))
-        except Exception:
-            token_count = (
-                dp.get("tokens", 0) if isinstance(dp.get("tokens"), int) else 0
-            )
-
-        if token_count <= max_tokens:
-            ndp = dict(dp)
-            ndp["tokens"] = token_count if token_count > 0 else ndp.get("tokens", 0)
-            normalized.append(ndp)
-            continue
-
-        pieces = split_text_by_token_limit(content, tokenizer, max_tokens)
-        if not pieces:
-            ndp = dict(dp)
-            ndp["tokens"] = token_count
-            normalized.append(ndp)
-            continue
-
-        base_chunk_id = dp.get("chunk_id")
-        parent_span = dp.get("_source_span")
-        span_search_from = 0
-        total_parts = len(pieces)
-        for i, piece in enumerate(pieces, 1):
-            new_dp = dict(dp)
-            new_dp["content"] = piece
-            try:
-                new_dp["tokens"] = len(tokenizer.encode(piece))
-            except Exception:
-                new_dp["tokens"] = max(1, int(len(piece) * 0.5))
-
-            # Shallow-copy preserves the nested heading dict and sidecar block from the source chunk; only the payload (content/token/chunk_id) is rewritten per split slice.
-            if isinstance(base_chunk_id, str) and base_chunk_id.strip():
-                new_dp["chunk_id"] = f"{base_chunk_id}-s{i:02d}"
-
-            child_span, span_search_from = _child_source_span(
-                content, parent_span, piece, span_search_from
-            )
-            if child_span is not None:
-                new_dp["_source_span"] = child_span
-            elif "_source_span" in new_dp:
-                new_dp.pop("_source_span", None)
-
-            new_dp["split_type"] = "hard_fallback"
-            new_dp["split_part"] = i
-            new_dp["split_total"] = total_parts
-            normalized.append(new_dp)
-
-    # Rebuild order index to keep continuity after splitting.
-    for idx, item in enumerate(normalized):
-        item["chunk_order_index"] = idx
-    return normalized
 
 async def update_chunk_cache_list(
     chunk_id: str,
@@ -144,98 +61,124 @@ async def update_chunk_cache_list(
             f"Failed to update chunk {chunk_id} with cache references on {cache_scenario}: {e}"
         )
 
-def sanitize_and_normalize_extracted_text(
-    input_text: str, remove_inner_quotes=False
-) -> str:
-    """Santitize and normalize extracted text
+
+def raise_first_failure(failures: BaseExceptionGroup) -> NoReturn:
+    """Re-raise the first failure of an ``asyncio.TaskGroup`` as itself.
+
+    Callers match on the concrete error (cancellation, flush errors) and show
+    its message as the document's ``error_msg``; the group wrapper would hide
+    both. The failure keeps its own ``__cause__``.
+    """
+    failure = failures.exceptions[0]
+    raise failure from failure.__cause__
+
+
+def generate_track_id(prefix: str = "upload") -> str:
+    """Generate a unique tracking ID with timestamp and UUID
+
     Args:
-        input_text: text string to be processed
-        is_name: whether the input text is a entity or relation name
+        prefix: Prefix for the track ID (e.g., 'upload', 'insert')
 
     Returns:
-        Santitized and normalized text string
+        str: Unique tracking ID in format: {prefix}_{timestamp}_{uuid}
     """
-    safe_input_text = sanitize_text_for_encoding(input_text)
-    if safe_input_text:
-        normalized_text = normalize_extracted_info(
-            safe_input_text, remove_inner_quotes=remove_inner_quotes
-        )
-        return normalized_text
-    return ""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_id = str(uuid.uuid4())[:8]  # Use first 8 characters of UUID
+    return f"{prefix}_{timestamp}_{unique_id}"
 
-def strip_control_characters(text: str, replacement_char: str = "") -> str:
-    """Remove control/separator chars and surrogates while preserving text.
 
-    Strips the same character classes as :func:`sanitize_text_for_encoding`
-    (surrogates via ``_SURROGATE_PATTERN`` and control chars via
-    ``_CONTROL_CHAR_PATTERN_ALL`` — including the C0 separators ``\\x1c``-``\\x1f``
-    FS/GS/RS/US, while keeping ``\\t``/``\\n``/``\\r``) but deliberately does
-    *not* ``html.unescape`` or ``.strip()`` the result.
-
-    This makes it safe for text that carries intentional markup (e.g. sidecar
-    block content with ``<table>``/``<drawing>``/``<equation>`` tags, where
-    unescaping ``&lt;`` would corrupt the markup) or significant leading/
-    trailing whitespace. For control-char-free input it returns the string
-    unchanged, so it does not perturb existing content hashes or snapshots.
+async def safe_vdb_operation_with_exception(
+    operation: Callable,
+    operation_name: str,
+    entity_name: str = "",
+    max_retries: int = 3,
+    retry_delay: float = 0.2,
+    logger_func: Optional[Callable] = None,
+    timeout_seconds: float | None = None,
+    log_start: bool = False,
+    success_log_threshold_seconds: float = 10.0,
+) -> None:
     """
-    if not text:
-        return text
-    text = _SURROGATE_PATTERN.sub(replacement_char, text)
-    return _CONTROL_CHAR_PATTERN_ALL.sub(replacement_char, text)
+    Safely execute vector database operations with retry mechanism and exception handling.
 
-def merge_source_ids(
-    existing_ids: Iterable[str] | None, new_ids: Iterable[str] | None
-) -> list[str]:
-    """Merge two iterables of source IDs while preserving order and removing duplicates."""
+    This function ensures that VDB operations are executed with proper error handling
+    and retry logic. If all retries fail, it raises an exception to maintain data consistency.
 
-    merged: list[str] = []
-    seen: set[str] = set()
+    Args:
+        operation: The async operation to execute
+        operation_name: Operation name for logging purposes
+        entity_name: Entity name for logging purposes
+        max_retries: Maximum number of retry attempts
+        retry_delay: Delay between retries in seconds
+        logger_func: Logger function to use for error messages
+        timeout_seconds: Optional timeout for a single operation attempt
+        log_start: Whether to emit start/success logs for each attempt
+        success_log_threshold_seconds: Log successful attempts when duration exceeds this threshold
 
-    for sequence in (existing_ids, new_ids):
-        if not sequence:
-            continue
-        for source_id in sequence:
-            if not source_id:
-                continue
-            if source_id not in seen:
-                seen.add(source_id)
-                merged.append(source_id)
+    Raises:
+        Exception: When operation fails after all retry attempts
+    """
+    log_func = logger_func or logger.warning
 
-    return merged
+    for attempt in range(max_retries):
+        start_ts = time.perf_counter()
+        attempt_label = f"{attempt + 1}/{max_retries}"
+        try:
+            if log_start:
+                logger.info(
+                    "VDB %s start for %s (attempt %s, timeout=%s)",
+                    operation_name,
+                    entity_name or "<unknown>",
+                    attempt_label,
+                    f"{timeout_seconds:.1f}s"
+                    if timeout_seconds is not None
+                    else "none",
+                )
 
-def apply_source_ids_limit(
-    source_ids: Sequence[str],
-    limit: int,
-    method: str,
-    *,
-    identifier: str | None = None,
-) -> list[str]:
-    """Apply a limit strategy to a sequence of source IDs."""
+            if timeout_seconds is not None and timeout_seconds > 0:
+                await asyncio.wait_for(operation(), timeout=timeout_seconds)
+            else:
+                await operation()
 
-    if limit <= 0:
-        return []
+            elapsed = time.perf_counter() - start_ts
+            if log_start or elapsed >= success_log_threshold_seconds:
+                logger.info(
+                    "VDB %s success for %s in %.2fs (attempt %s)",
+                    operation_name,
+                    entity_name or "<unknown>",
+                    elapsed,
+                    attempt_label,
+                )
+            return  # Success, return immediately
+        except asyncio.TimeoutError as e:
+            elapsed = time.perf_counter() - start_ts
+            timeout_msg = (
+                f"VDB {operation_name} timeout for {entity_name or '<unknown>'} "
+                f"after {elapsed:.2f}s (attempt {attempt_label}, timeout={timeout_seconds}s)"
+            )
+            if attempt >= max_retries - 1:
+                log_func(timeout_msg)
+                raise TimeoutError(timeout_msg) from e
+            log_func(f"{timeout_msg}, retrying...")
+            if retry_delay > 0:
+                await asyncio.sleep(retry_delay)
+        except Exception as e:
+            elapsed = time.perf_counter() - start_ts
+            if attempt >= max_retries - 1:
+                error_msg = (
+                    f"VDB {operation_name} failed for {entity_name or '<unknown>'} "
+                    f"after {max_retries} attempts in {elapsed:.2f}s: {e}"
+                )
+                log_func(error_msg)
+                raise Exception(error_msg) from e
+            else:
+                log_func(
+                    f"VDB {operation_name} attempt {attempt + 1} failed for "
+                    f"{entity_name or '<unknown>'} after {elapsed:.2f}s: {e}, retrying..."
+                )
+                if retry_delay > 0:
+                    await asyncio.sleep(retry_delay)
 
-    source_ids_list = list(source_ids)
-    if len(source_ids_list) <= limit:
-        return source_ids_list
-
-    normalized_method = normalize_source_ids_limit_method(method)
-
-    if normalized_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
-        truncated = source_ids_list[-limit:]
-    else:  # IGNORE_NEW
-        truncated = source_ids_list[:limit]
-
-    if identifier and len(truncated) < len(source_ids_list):
-        logger.debug(
-            "Source_id truncated: %s | %s keeping %s of %s entries",
-            identifier,
-            normalized_method,
-            len(truncated),
-            len(source_ids_list),
-        )
-
-    return truncated
 
 def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exception:
     """

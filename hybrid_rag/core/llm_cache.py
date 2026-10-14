@@ -29,22 +29,125 @@ deleted, so pass the collector wherever a ``chunk_id`` exists.
 
 
 import json
+import logging
+from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from pydantic import BaseModel, ValidationError
 
-from hybrid_rag.core.utils import (
-    CacheData,
-    compute_args_hash,
-    generate_cache_key,
-    handle_cache,
-    save_to_cache,
-)
-import logging
+from hybrid_rag.core.utils import compute_args_hash
 
 logger = logging.getLogger(__name__)
+
+
+def generate_cache_key(mode: str, cache_type: str, hash_value: str) -> str:
+    """Generate a flattened cache key in the format {mode}:{cache_type}:{hash}
+
+    Args:
+        mode: Cache mode (e.g., 'default', 'local', 'global')
+        cache_type: Type of cache (e.g., 'extract', 'query', 'keywords')
+        hash_value: Hash value from compute_args_hash
+
+    Returns:
+        str: Flattened cache key
+    """
+    return f"{mode}:{cache_type}:{hash_value}"
+
+
+async def handle_cache(
+    hashing_kv,
+    args_hash,
+    prompt,
+    mode="default",
+    cache_type="unknown",
+) -> tuple[str, int] | None:
+    """Generic cache handling function with flattened cache keys
+
+    Returns:
+        tuple[str, int] | None: (content, create_time) if cache hit, None if cache miss
+    """
+    if hashing_kv is None:
+        return None
+
+    if mode != "default":  # handle cache for all type of query
+        if not hashing_kv.global_config.get("enable_llm_cache"):
+            return None
+    else:  # handle cache for entity extraction
+        if not hashing_kv.global_config.get("enable_llm_cache_for_entity_extract"):
+            return None
+
+    # Use flattened cache key format: {mode}:{cache_type}:{hash}
+    flattened_key = generate_cache_key(mode, cache_type, args_hash)
+    cache_entry = await hashing_kv.get_by_id(flattened_key)
+    if cache_entry:
+        logger.debug(f"Flattened cache hit(key:{flattened_key})")
+        content = cache_entry["return"]
+        timestamp = cache_entry.get("create_time", 0)
+        return content, timestamp
+
+    logger.debug(f"Cache missed(mode:{mode} type:{cache_type})")
+    return None
+
+
+@dataclass
+class CacheData:
+    args_hash: str
+    content: str
+    prompt: str
+    mode: str = "default"
+    cache_type: str = "query"
+    chunk_id: str | None = None
+    queryparam: dict | None = None
+
+
+async def save_to_cache(hashing_kv, cache_data: CacheData):
+    """Save data to cache using flattened key structure.
+
+    Args:
+        hashing_kv: The key-value storage for caching
+        cache_data: The cache data to save
+    """
+    # Skip if storage is None or content is a streaming response
+    if hashing_kv is None or not cache_data.content:
+        return
+
+    # If content is a streaming response, don't cache it
+    if hasattr(cache_data.content, "__aiter__"):
+        logger.debug("Streaming response detected, skipping cache")
+        return
+
+    # Use flattened cache key format: {mode}:{cache_type}:{hash}
+    flattened_key = generate_cache_key(
+        cache_data.mode, cache_data.cache_type, cache_data.args_hash
+    )
+
+    # Check if we already have identical content cached
+    existing_cache = await hashing_kv.get_by_id(flattened_key)
+    if existing_cache:
+        existing_content = existing_cache.get("return")
+        if existing_content == cache_data.content:
+            logger.warning(
+                f"Cache duplication detected for {flattened_key}, skipping update"
+            )
+            return
+
+    # Create cache entry with flattened structure
+    cache_entry = {
+        "return": cache_data.content,
+        "cache_type": cache_data.cache_type,
+        "chunk_id": cache_data.chunk_id if cache_data.chunk_id is not None else None,
+        "original_prompt": cache_data.prompt,
+        "queryparam": cache_data.queryparam
+        if cache_data.queryparam is not None
+        else None,
+    }
+
+    logger.info(f" == LLM cache == saving: {flattened_key}")
+
+    # Save using flattened key
+    await hashing_kv.upsert({flattened_key: cache_entry})
 
 
 # configurable keys

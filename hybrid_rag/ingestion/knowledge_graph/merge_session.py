@@ -18,7 +18,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Iterable
 
-from hybrid_rag.core.utils import make_relation_chunk_key
+from hybrid_rag.core.source_ids import make_relation_chunk_key
 
 
 def _edge_key(src: str, tgt: str) -> tuple[str, str]:

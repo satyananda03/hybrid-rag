@@ -9,7 +9,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from hybrid_rag.config import settings
 from hybrid_rag.core.chunk_schema import normalize_page
-from hybrid_rag.core.utils import get_tokenizer
+from hybrid_rag.core.tokenizer import get_tokenizer
 import logging
 
 logger = logging.getLogger(__name__)
@@ -231,7 +231,7 @@ def extract_leading_trailing_from_content_list(
 def page_offsets_of(text_parts: List[str], pages: List[int | str | None]) -> List[Dict[str, Any]]:
     """Awal tiap halaman di dalam teks gabungan, dalam koordinat teks yang **tersimpan**.
 
-    Enqueue menyimpan ``sanitize_text_for_encoding("\\n\\n".join(parts))`` (worker.py),
+    Enqueue menyimpan ``sanitize_text_for_encoding("\\n\\n".join(parts))`` (pipeline.py),
     dan sanitize bisa mengubah panjang (``html.unescape``, strip). Maka offset dihitung
     pada hasil fungsi yang sama atas input yang sama — bukan pada teks mentah — dengan
     ``find`` berurutan atas tiap part yang sudah disanitasi. Teks gabungan sendiri tidak
@@ -242,7 +242,7 @@ def page_offsets_of(text_parts: List[str], pages: List[int | str | None]) -> Lis
     membuat dokumen hilang seluruhnya. Part tanpa halaman (``None``: .md/.txt) juga
     dilewati, jadi dokumen tanpa halaman menghasilkan ``[]``.
     """
-    from hybrid_rag.core.utils import sanitize_text_for_encoding
+    from hybrid_rag.ingestion.text_cleaning import sanitize_text_for_encoding
 
     whole = sanitize_text_for_encoding("\n\n".join(text_parts))
     offsets: List[Dict[str, Any]] = []

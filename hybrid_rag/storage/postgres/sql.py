@@ -7,7 +7,7 @@ resolves a storage namespace to its table.
 
 
 
-from hybrid_rag.core.namespace import NameSpace, is_namespace
+from hybrid_rag.core.constants import NameSpace, is_namespace
 
 
 

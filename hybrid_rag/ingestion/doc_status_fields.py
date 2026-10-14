@@ -14,7 +14,8 @@ from hybrid_rag.core.base import DocProcessingStatus, DocStatusStorage
 from hybrid_rag.core.constants import (
     FILE_EXTRACTION_SUMMARY_PREFIX,
 )
-from hybrid_rag.core.utils import compute_mdhash_id, get_content_summary
+from hybrid_rag.core.utils import compute_mdhash_id
+from hybrid_rag.ingestion.text_cleaning import get_content_summary
 
 
 PLACEHOLDER_DOCUMENT_SOURCES = {"", "no-file-path", "unknown_source"}

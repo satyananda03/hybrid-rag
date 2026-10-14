@@ -10,14 +10,23 @@ import re
 from collections import Counter
 from typing import Any, TYPE_CHECKING
 
+import numpy as np
+
 if TYPE_CHECKING:
     from hybrid_rag.core.base import BaseKVStorage, BaseVectorStorage
 
 from hybrid_rag.core.chunk_schema import format_location
-from hybrid_rag.core.utils import cosine_similarity
 import logging
 
 logger = logging.getLogger(__name__)
+
+def cosine_similarity(v1, v2):
+    """Calculate cosine similarity between two vectors"""
+    dot_product = np.dot(v1, v2)
+    norm1 = np.linalg.norm(v1)
+    norm2 = np.linalg.norm(v2)
+    return dot_product / (norm1 * norm2)
+
 
 # Image chunks carry their image as "Image Path: <url>" (multimodal_template.py).
 IMAGE_PATH_PATTERN = re.compile(

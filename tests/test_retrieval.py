@@ -2,7 +2,7 @@ import asyncio
 import pytest
 from hybrid_rag.config import settings
 from hybrid_rag.core.base import collection_suffix
-from hybrid_rag.core.namespace import NameSpace
+from hybrid_rag.core.constants import NameSpace
 from hybrid_rag.retrieval import context
 from hybrid_rag.retrieval.pipeline import _retrieve
 from hybrid_rag.retrieval.query import _normalize_keyword_list

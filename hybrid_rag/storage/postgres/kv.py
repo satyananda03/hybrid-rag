@@ -14,7 +14,7 @@ from typing import (
 
 
 from hybrid_rag.core.base import BaseKVStorage
-from hybrid_rag.core.namespace import NameSpace, is_namespace
+from hybrid_rag.core.constants import NameSpace, is_namespace
 from hybrid_rag.core.utils import validate_workspace
 import logging
 

@@ -8,16 +8,22 @@ from collections import Counter, defaultdict
 from hybrid_rag.core.exceptions import (
     PipelineCancelledException,
 )
-from hybrid_rag.ingestion.utils import apply_source_ids_limit, create_prefixed_exception, merge_source_ids, pack_user_ass_to_openai_messages, sanitize_and_normalize_extracted_text, update_chunk_cache_list
+from hybrid_rag.core.source_ids import apply_source_ids_limit, merge_source_ids
+from hybrid_rag.ingestion.utils import (
+    create_prefixed_exception,
+    pack_user_ass_to_openai_messages,
+    update_chunk_cache_list,
+)
+from hybrid_rag.ingestion.text_cleaning import sanitize_and_normalize_extracted_text
 from hybrid_rag.core.utils import (
     compute_mdhash_id,
-    Tokenizer,
-    sanitize_text_for_encoding,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
-    safe_vdb_operation_with_exception,
-    make_relation_chunk_key,
 )
+from hybrid_rag.core.tokenizer import Tokenizer
+from hybrid_rag.ingestion.text_cleaning import sanitize_text_for_encoding
+from hybrid_rag.ingestion.utils import safe_vdb_operation_with_exception
+from hybrid_rag.core.source_ids import make_relation_chunk_key
 import logging
 from hybrid_rag import progress
 
