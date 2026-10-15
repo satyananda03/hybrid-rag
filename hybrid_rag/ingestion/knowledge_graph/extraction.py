@@ -54,6 +54,8 @@ from hybrid_rag.ingestion.knowledge_graph.ontology_schema import (
     load_ontology_schema,
     prune_chunk,
 )
+from langchain_core.exceptions import OutputParserException
+from langchain_core.runnables import Runnable
 from pydantic import ValidationError
 from hybrid_rag.core.llm_cache import (
     CACHE_CHUNK_ID,
@@ -493,6 +495,44 @@ def _relation_typing(edges: list[dict], existing: dict | None) -> dict:
     if not types:
         return {}
     return {"relation_type": ",".join(sorted(types)), "relation_triples": sorted(triples)}
+
+
+# Model output that breaks the extraction contract as a whole (invalid JSON, no
+# ``entities`` array). A single broken record never gets here: the schema drops it.
+INVALID_OUTPUT_ERRORS = (ValidationError, OutputParserException)
+
+
+async def _extract_or_none(
+    chain: Runnable,
+    inputs: dict[str, Any],
+    config: dict[str, Any],
+    chunk_key: str,
+    pass_name: str,
+) -> EntityExtractionOutput | None:
+    """Run one extraction pass; ``None`` when its output is still unusable after one retry.
+
+    ``None`` means "no records from this pass", not an entity:
+    :func:`_parse_extraction_output` turns it into no nodes and no edges. The
+    chunk's text and vector are already stored, so it stays findable by vector
+    search; only its graph contribution is missing. A failed reply is never
+    cached, so the retry really asks the model again.
+
+    Only invalid *output* is caught. Infrastructure errors (timeouts, 5xx, auth)
+    still fail the document: skipping those would let a dead provider "succeed"
+    with an empty graph.
+    """
+    for attempt in (1, 2):
+        try:
+            return await chain.ainvoke(inputs, config=config)
+        except INVALID_OUTPUT_ERRORS as e:
+            logger.warning(
+                f"{chunk_key}: invalid {pass_name} output (attempt {attempt}/2): {str(e)[:500]}"
+            )
+    progress.activity(
+        f"Ekstraksi KG satu chunk dilewati: output model tidak valid ({chunk_key}, {pass_name})",
+        level="warning",
+    )
+    return None
 
 
 def _parse_extraction_output(
@@ -3050,8 +3090,8 @@ async def extract_entities(
             }
         }
 
-        first_pass: EntityExtractionOutput | None = await chains.extraction_chain.ainvoke(
-            chain_inputs, config=cache_config
+        first_pass = await _extract_or_none(
+            chains.extraction_chain, chain_inputs, cache_config, chunk_key, "extraction"
         )
         timestamp = int(time.time())
 
@@ -3098,8 +3138,12 @@ async def extract_entities(
                 run_gleaning = False
 
         if run_gleaning:
-            glean_pass: EntityExtractionOutput | None = await chains.gleaning_chain.ainvoke(
-                {**chain_inputs, "messages": history}, config=cache_config
+            glean_pass = await _extract_or_none(
+                chains.gleaning_chain,
+                {**chain_inputs, "messages": history},
+                cache_config,
+                chunk_key,
+                "gleaning",
             )
             timestamp = int(time.time())
 
