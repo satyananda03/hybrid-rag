@@ -1,0 +1,27 @@
+defaults:
+  processing_mode: one-to-one
+  backend: llm
+  inference: local
+  export_format: csv
+docling:
+  pipeline: ocr
+  export:
+    docling_json: true
+    markdown: true
+    per_page_markdown: false
+models:
+  vlm:
+    local:
+      model: numind/NuExtract-2.0-2B
+      provider: docling
+  llm:
+    local:
+      model: llama-3.1-8b
+      provider: vllm
+    remote:
+      model: mistral-small-latest
+      provider: mistral
+output:
+  default_directory: outputs
+  create_visualizations: true
+  create_markdown: true

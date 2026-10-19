@@ -1,0 +1,603 @@
+# API Keys Setup
+
+## Overview
+
+Remote LLM providers require API keys for authentication. This guide covers:
+
+- **OpenAI** (GPT-4, GPT-3.5-turbo)
+- **Mistral AI** (Mistral Small, Medium, Large)
+- **Google Gemini** (Gemini Pro, Gemini Flash)
+- **IBM watsonx** (Granite, Llama, Mixtral)
+- **Amazon Bedrock** (Anthropic Claude, Llama, Mistral, Titan) — uses AWS credentials, not a single API key
+
+!!! info "API Keys Not Required"
+    API keys are **not required** for:
+    
+    - Local VLM (NuExtract)
+    - Local LLM (vLLM, Ollama, LM Studio)
+
+## Quick Setup
+
+### Linux/macOS
+
+Add to your shell configuration file (`~/.bashrc`, `~/.zshrc`, or `~/.bash_profile`):
+
+```bash
+# OpenAI
+export OPENAI_API_KEY="sk-..."
+
+# Mistral AI
+export MISTRAL_API_KEY="..."
+
+# Google Gemini
+export GEMINI_API_KEY="..."
+
+# IBM watsonx
+export WATSONX_API_KEY="..."
+export WATSONX_PROJECT_ID="..."
+export WATSONX_URL="https://us-south.ml.cloud.ibm.com"  # Optional
+
+# Amazon Bedrock (AWS credential chain — not a single API key)
+export AWS_ACCESS_KEY_ID="..."
+export AWS_SECRET_ACCESS_KEY="..."
+export AWS_REGION_NAME="us-east-1"   # required
+```
+
+Then reload:
+```bash
+source ~/.bashrc  # or ~/.zshrc
+```
+
+### Windows (PowerShell)
+
+```powershell
+# OpenAI
+$env:OPENAI_API_KEY="sk-..."
+
+# Mistral AI
+$env:MISTRAL_API_KEY="..."
+
+# Google Gemini
+$env:GEMINI_API_KEY="..."
+
+# IBM watsonx
+$env:WATSONX_API_KEY="..."
+$env:WATSONX_PROJECT_ID="..."
+$env:WATSONX_URL="https://us-south.ml.cloud.ibm.com"
+```
+
+### Windows (Command Prompt)
+
+```cmd
+set OPENAI_API_KEY=sk-...
+set MISTRAL_API_KEY=...
+set GEMINI_API_KEY=...
+set WATSONX_API_KEY=...
+set WATSONX_PROJECT_ID=...
+```
+
+### Using .env File (Recommended)
+
+Copy the provided [`.env.example`](https://github.com/docling-project/docling-graph/blob/main/.env.example) to `.env` in your project root and fill in only the values for the provider(s) you use:
+
+```bash
+cp .env.example .env
+```
+
+**Security**: Add `.env` to `.gitignore`:
+```bash
+echo ".env" >> .gitignore
+```
+
+### Config-based API key and custom endpoints
+
+You can set the API key or endpoint URL in `config.yaml` under `llm_overrides.connection`:
+
+- `api_key`: API key value (prefer env or `.env` for secrets)
+- `base_url`: Custom base URL (e.g. for on-prem OpenAI-compatible servers)
+
+For on-prem or custom OpenAI-compatible endpoints, use the fixed env vars:
+
+```bash
+export CUSTOM_LLM_BASE_URL="https://your-llm.example.com/v1"
+export CUSTOM_LLM_API_KEY="your-api-key"
+```
+
+Run `docling-graph init` and choose "Use custom endpoint" for guided setup.
+
+### LM Studio (optional API key)
+
+The LM Studio local server usually does **not** require an API key when running on localhost. When an API key is needed (e.g. remote LM Studio or a secured server), set it in the environment or in config:
+
+- **Environment:** `export LM_STUDIO_API_KEY="your-key"`
+- **Config:** Set `llm_overrides.connection.api_key` in your `config.yaml` (prefer env for secrets)
+
+To use a non-default server URL (e.g. a different port or host), set:
+
+```bash
+export LM_STUDIO_API_BASE="http://localhost:1234/v1"
+```
+
+See [Model Configuration](../pipeline-configuration/model-configuration.md) for full LM Studio setup with `provider=lmstudio`.
+
+## Provider-Specific Setup
+
+### OpenAI
+
+#### 1. Get API Key
+
+1. Visit [OpenAI Platform](https://platform.openai.com/)
+2. Sign up or log in
+3. Navigate to [API Keys](https://platform.openai.com/api-keys)
+4. Click "Create new secret key"
+5. Copy the key (starts with `sk-`)
+
+#### 2. Set Environment Variable
+
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+#### 3. Verify
+
+```bash
+uv run python -c "import os; print('OpenAI key set:', bool(os.getenv('OPENAI_API_KEY')))"
+```
+
+#### 4. Test
+
+```bash
+uv run docling-graph convert document.pdf \
+    --template "templates.BillingDocument" \
+    --backend llm \
+    --inference remote \
+    --provider openai \
+    --model gpt-4-turbo
+```
+
+#### Available Models
+
+| Model | Context | Cost (per 1M tokens) | Best For |
+|-------|---------|---------------------|----------|
+| gpt-4-turbo | 128K | $10 / $30 | Complex extraction |
+| gpt-4 | 8K | $30 / $60 | High quality |
+| gpt-3.5-turbo | 16K | $0.50 / $1.50 | Fast, cost-effective |
+
+### Mistral AI
+
+#### 1. Get API Key
+
+1. Visit [Mistral AI Console](https://console.mistral.ai/)
+2. Sign up or log in
+3. Navigate to API Keys
+4. Create new API key
+5. Copy the key
+
+#### 2. Set Environment Variable
+
+```bash
+export MISTRAL_API_KEY="..."
+```
+
+#### 3. Verify
+
+```bash
+uv run python -c "import os; print('Mistral key set:', bool(os.getenv('MISTRAL_API_KEY')))"
+```
+
+#### 4. Test
+
+```bash
+uv run docling-graph convert document.pdf \
+    --template "templates.BillingDocument" \
+    --backend llm \
+    --inference remote \
+    --provider mistral \
+    --model mistral-medium-latest
+```
+
+#### Available Models
+
+| Model | Context | Cost (per 1M tokens) | Best For |
+|-------|---------|---------------------|----------|
+| mistral-large-latest | 32K | $4 / $12 | Complex tasks |
+| mistral-medium-latest | 32K | $2.7 / $8.1 | Balanced |
+| mistral-small-latest | 32K | $1 / $3 | Fast, affordable |
+
+### Google Gemini
+
+#### 1. Get API Key
+
+1. Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
+2. Sign in with Google account
+3. Click "Create API Key"
+4. Copy the key
+
+#### 2. Set Environment Variable
+
+```bash
+export GEMINI_API_KEY="..."
+```
+
+#### 3. Verify
+
+```bash
+uv run python -c "import os; print('Gemini key set:', bool(os.getenv('GEMINI_API_KEY')))"
+```
+
+#### 4. Test
+
+```bash
+uv run docling-graph convert document.pdf \
+    --template "templates.BillingDocument" \
+    --backend llm \
+    --inference remote \
+    --provider gemini \
+    --model gemini-2.5-flash
+```
+
+#### Available Models
+
+| Model | Context | Cost (per 1M tokens) | Best For |
+|-------|---------|---------------------|----------|
+| gemini-2.5-flash | 1M | $0.075 / $0.30 | Very fast, cheap |
+| gemini-pro | 32K | $0.50 / $1.50 | Balanced |
+
+### IBM watsonx
+
+#### 1. Get Credentials
+
+1. Visit [IBM Cloud](https://cloud.ibm.com/)
+2. Create or log into account
+3. Navigate to [watsonx](https://www.ibm.com/watsonx)
+4. Create a project
+5. Get API key and project ID from project settings
+
+#### 2. Set Environment Variables
+
+```bash
+export WATSONX_API_KEY="..."
+export WATSONX_PROJECT_ID="..."
+export WATSONX_URL="https://us-south.ml.cloud.ibm.com"  # Optional, defaults to US South
+```
+
+#### 3. Verify
+
+```bash
+uv run python -c "import os; print('watsonx key set:', bool(os.getenv('WATSONX_API_KEY'))); print('watsonx project set:', bool(os.getenv('WATSONX_PROJECT_ID')))"
+```
+
+#### 4. Test
+
+```bash
+uv run docling-graph convert document.pdf \
+    --template "templates.BillingDocument" \
+    --backend llm \
+    --inference remote \
+    --provider watsonx \
+    --model ibm/granite-13b-chat-v2
+```
+
+#### Available Models
+
+| Model | Context | Best For |
+|-------|---------|----------|
+| ibm/granite-13b-chat-v2 | 8K | General purpose |
+| meta-llama/llama-3-70b-instruct | 8K | High quality |
+| mistralai/mixtral-8x7b-instruct-v01 | 32K | Complex tasks |
+
+!!! tip "watsonx Configuration"
+    For detailed watsonx configuration, refer to the [Model Configuration](../pipeline-configuration/model-configuration.md) guide.
+
+### Amazon Bedrock
+
+Bedrock is different from the other providers: it authenticates with **AWS
+credentials** (the standard AWS credential chain) rather than a single API key,
+and it requires the `boto3` package.
+
+#### 1. Install the extra
+
+```bash
+pip install 'docling-graph[bedrock]'
+```
+
+#### 2. Request model access
+
+1. Open the [Amazon Bedrock console](https://console.aws.amazon.com/bedrock/)
+2. Go to **Model access** and request access to the model(s) you need (e.g. Anthropic Claude)
+3. Note the **model ID** and the **region** it is available in
+
+#### 3. Provide credentials
+
+Any method the AWS credential chain understands works — pick one:
+
+```bash
+# Static keys
+export AWS_ACCESS_KEY_ID="your-access-key"
+export AWS_SECRET_ACCESS_KEY="your-secret-key"
+export AWS_REGION_NAME="us-east-1"          # required
+
+# ...or a named profile / SSO
+export AWS_PROFILE="my-profile"
+export AWS_REGION_NAME="us-east-1"
+
+# ...or a Bedrock bearer token
+export AWS_BEARER_TOKEN_BEDROCK="your-bearer-token"
+export AWS_REGION_NAME="us-east-1"
+```
+
+On EC2/ECS/Lambda with an attached **IAM role**, no keys are needed at all —
+only `AWS_REGION_NAME` (or the region baked into the instance metadata).
+
+!!! warning "Region is required"
+    Unlike other providers, Bedrock has no default region. If `AWS_REGION_NAME`
+    is unset (and no region is available from your AWS profile/instance),
+    requests fail. Note that Bedrock reads `AWS_REGION_NAME`, not `AWS_REGION`.
+
+#### 4. Verify
+
+```bash
+uv run python -c "import os; print('AWS creds set:', bool(os.getenv('AWS_ACCESS_KEY_ID') or os.getenv('AWS_PROFILE') or os.getenv('AWS_BEARER_TOKEN_BEDROCK'))); print('Region set:', bool(os.getenv('AWS_REGION_NAME')))"
+```
+
+#### 5. Test
+
+```bash
+uv run docling-graph convert document.pdf \
+    --template "templates.BillingDocument" \
+    --backend llm \
+    --inference remote \
+    --provider bedrock \
+    --model anthropic.claude-3-5-sonnet-20240620-v1:0
+```
+
+#### Available Models
+
+| Model ID | Notes |
+|----------|-------|
+| `anthropic.claude-3-5-sonnet-20240620-v1:0` | Default; strong quality, supports structured output |
+| `anthropic.claude-3-haiku-20240307-v1:0` | Fast, economical |
+| `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | Inference-profile id (region-prefixed) for newer Claude |
+| `meta.llama3-70b-instruct-v1:0` | Llama 3 70B |
+| `mistral.mistral-large-2402-v1:0` | Mistral Large |
+
+!!! note "Structured output"
+    Schema-enforced output uses Bedrock's Converse API and works for models that
+    support it (e.g. Anthropic Claude). For models that do not, run with
+    `--no-schema-enforced-llm` (CLI) or `structured_output=False` (Python API).
+
+## Verification
+
+### Check All Keys
+
+```bash
+uv run python << EOF
+import os
+
+providers = {
+    'OpenAI': 'OPENAI_API_KEY',
+    'Mistral': 'MISTRAL_API_KEY',
+    'Gemini': 'GEMINI_API_KEY',
+    'watsonx API': 'WATSONX_API_KEY',
+    'watsonx Project': 'WATSONX_PROJECT_ID'
+}
+
+for name, var in providers.items():
+    value = os.getenv(var)
+    status = '✅ Set' if value else '❌ Not set'
+    print(f'{name:20} {status}')
+EOF
+```
+
+Expected output:
+```
+OpenAI               ✅ Set
+Mistral              ✅ Set
+Gemini               ✅ Set
+watsonx API          ✅ Set
+watsonx Project      ✅ Set
+```
+
+### Test Connection
+
+```bash
+# Test with a simple extraction
+uv run docling-graph convert docs/examples/data/sample.pdf \
+    --template "templates.BillingDocument" \
+    --backend llm \
+    --inference remote \
+    --provider openai \
+    --model gpt-3.5-turbo \
+    --output-dir test_output
+```
+
+## Security Best Practices
+
+### 1. Never Commit API Keys
+
+```bash
+# Add to .gitignore
+echo ".env" >> .gitignore
+echo "*.key" >> .gitignore
+echo "secrets/" >> .gitignore
+```
+
+### 2. Use Environment Variables
+
+**Don't**:
+```python
+# ❌ Hardcoded in code
+api_key = "sk-..."
+```
+
+**Do**:
+```python
+# ✅ From environment
+import os
+api_key = os.getenv('OPENAI_API_KEY')
+```
+
+### 3. Rotate Keys Regularly
+
+- Rotate API keys every 90 days
+- Immediately rotate if compromised
+- Use separate keys for dev/prod
+
+### 4. Limit Key Permissions
+
+- Use read-only keys when possible
+- Set usage limits
+- Monitor usage regularly
+
+### 5. Use Secret Management
+
+For production:
+- AWS Secrets Manager
+- Azure Key Vault
+- Google Secret Manager
+- HashiCorp Vault
+
+## Cost Management
+
+### Monitor Usage
+
+**OpenAI**:
+- Dashboard: https://platform.openai.com/usage
+
+**Mistral**:
+- Console: https://console.mistral.ai/usage
+
+**Gemini**:
+- Console: https://makersuite.google.com/
+
+**watsonx**:
+- IBM Cloud Dashboard
+
+### Set Usage Limits
+
+**OpenAI**:
+1. Go to [Usage Limits](https://platform.openai.com/account/limits)
+2. Set monthly budget
+3. Enable email alerts
+
+**Mistral**:
+1. Go to Console
+2. Set budget alerts
+3. Monitor usage
+
+### Cost Optimization Tips
+
+1. **Use appropriate models**:
+   - GPT-3.5-turbo for simple tasks
+   - GPT-4 only when needed
+
+2. **Enable chunking**:
+   - Reduces token usage
+   - Processes only relevant parts
+
+3. **Cache results**:
+   - Avoid re-processing same documents
+
+4. **Batch processing**:
+   - Process multiple documents together
+
+5. **Monitor costs**:
+   - Check usage daily
+   - Set alerts
+
+## Troubleshooting
+
+### 🐛 API key not recognized
+
+**Check**:
+```bash
+echo $OPENAI_API_KEY  # Should show your key
+```
+
+**If empty**:
+```bash
+# Re-export
+export OPENAI_API_KEY="sk-..."
+
+# Or reload shell config
+source ~/.bashrc
+```
+
+### 🐛 Authentication failed
+
+**Symptoms**:
+```
+Error: Invalid API key
+```
+
+**Solutions**:
+
+1. **Verify key is correct**:
+   - Check for typos
+   - Ensure no extra spaces
+   - Verify key hasn't expired
+
+2. **Check key format**:
+   - OpenAI: starts with `sk-`
+   - Mistral: alphanumeric string
+   - Gemini: alphanumeric string
+
+3. **Regenerate key**:
+   - Go to provider dashboard
+   - Create new key
+   - Update environment variable
+
+### 🐛 Rate limit exceeded
+
+**Symptoms**:
+```
+Error: Rate limit exceeded
+```
+
+**Solutions**:
+
+1. **Wait and retry**:
+   - Most limits reset after 1 minute
+
+2. **Upgrade plan**:
+   - Increase rate limits
+
+3. **Use different provider**:
+   - Switch to provider with higher limits
+
+### 🐛 Insufficient credits
+
+**Symptoms**:
+```
+Error: Insufficient credits
+```
+
+**Solutions**:
+
+1. **Add credits**:
+   - Go to billing dashboard
+   - Add payment method
+
+2. **Use different provider**:
+   - Switch to provider with credits
+
+3. **Use local inference**:
+   - No API costs
+
+## Provider Comparison
+
+| Provider | Pros | Cons | Best For |
+|----------|------|------|----------|
+| **OpenAI** | High quality, reliable | Expensive | Complex extraction |
+| **Mistral** | Good balance, affordable | Smaller context | General purpose |
+| **Gemini** | Very cheap, fast | Newer, less tested | High volume |
+| **watsonx** | Enterprise features | Setup complexity | Enterprise use |
+| **Bedrock** | AWS-native, IAM auth, model choice | Requires AWS setup + model access | AWS-hosted workloads |
+
+## Next Steps
+
+API keys configured! Now:
+
+1. **[Schema Definition](../schema-definition/index.md)** - Create your first template
+2. **[Pipeline Configuration](../pipeline-configuration/index.md)** - Configure extraction
+3. **[Quick Start](../../introduction/quickstart.md)** - Run your first extraction

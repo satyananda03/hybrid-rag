@@ -16,10 +16,10 @@ TEMPLATES: dict[str, Any] = {}
 # Tag XML membatasi bagian dan chunk; isinya teks biasa supaya mudah dibaca LLM.
 TEMPLATES["kg_query_context"] = """<context>
 <knowledge_graph>
-### Entities
+Entities :
 {entities_str}
 
-### Relationships
+Relationships :
 {relations_str}
 </knowledge_graph>
 

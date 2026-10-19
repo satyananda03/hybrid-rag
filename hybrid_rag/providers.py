@@ -1,7 +1,13 @@
-from typing import Any, Callable
+import logging
+from collections.abc import Awaitable, Callable, Generator
+from typing import Any
+
 import numpy as np
+
 from hybrid_rag.config import settings
 from hybrid_rag.core.embedding import EmbeddingFunc
+
+logger = logging.getLogger(__name__)
 
 _hooks: dict[str, Any] = {
     "get_llm": None,
@@ -59,6 +65,65 @@ def get_reranker(
     if hook is None:
         return None
     return hook(model_id, base_url=base_url, api_key=api_key, timeout=timeout, max_retries=settings.max_retries)
+
+
+def embed_by_index_sync(create: Callable[..., Any], texts: list[str], batch_size: int) -> list[list[float]]:
+    """:func:`embed_by_index` for a synchronous ``create``."""
+    requests = _index_paired_requests(texts, batch_size)
+    try:
+        batch = next(requests)
+        while True:
+            batch = requests.send(create(input=batch))
+    except StopIteration as done:
+        return done.value
+
+
+async def embed_by_index(
+    create: Callable[..., Awaitable[Any]], texts: list[str], batch_size: int
+) -> list[list[float]]:
+    """Embed ``texts`` through an OpenAI-compatible ``create(input=...)``, pairing each vector by its ``index``.
+
+    An OpenAI-compatible endpoint is not bound to answer in input order. A caching
+    proxy given a batch that mixes cached and uncached inputs returns some inputs
+    twice and others not at all, each still labelled with its true ``index``; a
+    client pairing by position (``OpenAIEmbeddings``) then stores one text's vector
+    under another. Here every vector goes to the input its ``index`` names, and an
+    input left without one is asked for again on its own.
+    """
+    requests = _index_paired_requests(texts, batch_size)
+    try:
+        batch = next(requests)
+        while True:
+            batch = requests.send(await create(input=batch))
+    except StopIteration as done:
+        return done.value
+
+
+def _index_paired_requests(texts: list[str], batch_size: int) -> Generator[list[str], Any, list[list[float]]]:
+    """The pairing shared by both drivers: yields each request's ``input``, is sent its response.
+
+    Written once so the sync and async paths cannot drift apart; the drivers only
+    differ in whether they await ``create``.
+    """
+    vectors: dict[int, list[float]] = {}
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start : start + batch_size]
+        for item in _embedding_data((yield batch)):
+            if 0 <= item["index"] < len(batch):
+                vectors.setdefault(start + item["index"], item["embedding"])
+    missing = [i for i in range(len(texts)) if i not in vectors]
+    if missing:
+        logger.warning(f"embedding endpoint left {len(missing)}/{len(texts)} inputs without a vector; re-asking one by one")
+    for i in missing:
+        data = _embedding_data((yield [texts[i]]))
+        if len(data) != 1:
+            raise RuntimeError(f"embedding endpoint returned {len(data)} vectors for one input")
+        vectors[i] = data[0]["embedding"]
+    return [vectors[i] for i in range(len(texts))]
+
+
+def _embedding_data(response: Any) -> list[dict]:
+    return (response if isinstance(response, dict) else response.model_dump())["data"]
 
 
 def build_embedding_func() -> EmbeddingFunc:

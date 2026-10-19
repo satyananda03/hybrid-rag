@@ -208,6 +208,11 @@ def normalize_page(value: Any) -> int | str | None:
     return None
 
 
+def is_sheet(page: int | str | None) -> bool:
+    """A normalized page that names an Excel sheet rather than numbering a page."""
+    return isinstance(page, str)
+
+
 def format_location(start: int | str | None, end: int | str | None = None) -> str | None:
     """Citation text for a ``page_start``..``page_end`` span: ``hal. 3–4`` or ``sheet "Rekap"``."""
     if start is None:

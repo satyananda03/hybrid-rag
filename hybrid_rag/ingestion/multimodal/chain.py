@@ -27,14 +27,16 @@ MULTIMODAL_PROMPTS_PATH = Path(__file__).resolve().parent / "multimodal.yaml"
 class ImageEntity(BaseModel):
     entity_name: str = Field(
         description=(
-            "A clean, semantic, distinctive title representing the core subject of the image (e.g., 'Flowchart Verifikasi Dokumen SIPD')."
-            "NEVER use raw file names or generic labels like 'Figure 1'."
+            "Canonical Knowledge Graph node identifier formatted as a Title Case noun phrase (strictly 3 to 7 words). "
+            "Combine the visual type and core subject/system (e.g., 'Flowchart Verifikasi Dokumen SIPD', 'Arsitektur Jaringan Server Pusdatin'). "
+            "RULES: 1. NO clauses, verbs, or conjunctions ('yang', 'untuk', 'menunjukkan', 'pada'). "
+            "2. NO raw filenames, figure numbers ('Gambar 1'), or vague labels ('Diagram Proses')."
         )
     )
     summary: Prose = Field(
         description=(
-            "An overall summary explaining what the image depicts, its functional purpose or context within the document, and the main takeaway."
-            "NEVER use introductory filler phrases like 'Gambar ini menunjukkan', start directly with the core subject."
+            "A 1-2 sentence overview of what the image depicts and its functional purpose in the document. "
+            "Start directly with the core subject; NEVER use filler openings like 'Gambar ini menunjukkan'."
         )
     )
 
@@ -43,29 +45,32 @@ class ImageEntity(BaseModel):
     def entity_type(self) -> Literal["image"]:
         return "image"
 
+
 class ImageAnalysis(BaseModel):
+    entity_info: ImageEntity
     detailed_description: Prose = Field(
         description=(
-            "A thorough, information-dense explanation of all content inside the image. "
-            "CRITICAL : Include all visible text, exact quantitative data points from charts, labels, system metrics, and workflow sequences or component relationships!"
-            "Strictly exclude visual styling (colors, fonts, lighting, decorative layout, etc)."
+            "A dense, factual explanation of the image content in 2 to 4 paragraphs (no visual styling). "
+            "Include key visible text, system metrics, workflow sequences, and component relationships. "
+            "Avoid repetitive sentence structures."
         )
     )
-    entity_info: ImageEntity
+
 
 # TABLE MODALITY
 class TableEntity(BaseModel):
     entity_name: str = Field(
         description=(
-            "A clean, semantic, distinctive title representing the dataset or subject of the table (e.g., 'Tabel Spesifikasi Hardware'). "
-            "NEVER use generic labels like 'Table 1'."
+            "Canonical Knowledge Graph node identifier formatted as a Title Case noun phrase (strictly 3 to 7 words). "
+            "Represent the exact dataset subject and scope (e.g., 'Tabel Spesifikasi Hardware Server', 'Daftar Jejaring Kabupaten Kota Sumbar'). "
+            "RULES: 1. NO clauses, verbs, or conjunctions ('yang', 'untuk', 'berisi', 'pada'). "
+            "2. NO generic labels ('Table 1', 'Tabel Data', 'Sheet 03')."
         )
     )
     summary: Prose = Field(
         description=(
-            "An overall summary describing exactly WHAT information the table holds, its core purpose, and its structural dimensions. "
-            "NEVER generate subjective insights or takeaways. "
-            "DO NOT use introductory filler phrases like 'Tabel ini menunjukkan', start directly with the core subject."
+            "A 1-2 sentence factual overview stating the dataset's subject, purpose, and structural dimensions. "
+            "Start directly with the core subject; NEVER use filler openings like 'Tabel ini berisi' or subjective insights."
         )
     )
 
@@ -76,15 +81,14 @@ class TableEntity(BaseModel):
 
 
 class TableAnalysis(BaseModel):
+    entity_info: TableEntity
     detailed_description: Prose = Field(
         description=(
-            "A comprehensive explanation of the table's structure and key data in natural prose (no bullet points). "
-            "State the column headers and units. "
-            "CRITICAL: For large tables, NEVER transcribe every single row. Instead, group the data by categories, highlight aggregate totals, maximum/minimum extremes, and overarching rules. "
-            "Always use specific entity names for self-contained sentences. Strictly exclude formatting styles and NEVER hallucinate data."
+            "A compact synthesis of the table's schema (column headers/units) and key data patterns in 2 to 4 paragraphs of natural prose. "
+            "CRITICAL: NEVER transcribe row-by-row, NEVER enumerate every entity/region, NEVER list empty cells individually, and NEVER calculate unprinted totals. "
+            "Group rows into high-level categories, cite 2-3 examples, and report only explicitly printed summary numbers."
         )
     )
-    entity_info: TableEntity
 
 # EQUATION MODALITY
 class EquationEntity(BaseModel):

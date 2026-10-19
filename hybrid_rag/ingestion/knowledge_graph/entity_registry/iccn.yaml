@@ -1,0 +1,20 @@
+global:
+  - canonical: Indonesia Creative Cities Network
+    aliases: [ICCN, Indonesia Creative Cities Networks, Jejaring Kota Kreatif Indonesia]
+  - canonical: UNESCO Creative Cities Network
+    aliases: [UCCN, UNESCO Creative Cities Networks]
+  - canonical: Kementerian Pariwisata dan Ekonomi Kreatif
+    aliases: [Kemenparekraf, Kemenparekraf/Baparekraf]
+  - canonical: Kementerian Ekonomi Kreatif
+    aliases: [Kemenekraf]
+
+# by_type:
+#   program:
+#     - canonical: Kota Kreatif Indonesia
+#       aliases: [KKI]
+
+never_merge:
+  - [Kementerian Pariwisata dan Ekonomi Kreatif, Kementerian Ekonomi Kreatif]
+  - [Kementerian Pariwisata dan Ekonomi Kreatif, Badan Ekonomi Kreatif]
+  - [Kemenparekraf, Bekraf]
+  - [Kota Malang, Kabupaten Malang]

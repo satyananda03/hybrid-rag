@@ -1,5 +1,6 @@
 import asyncio
 import bisect
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -11,6 +12,7 @@ from functools import cache
 
 from hybrid_rag import providers
 from hybrid_rag.config import NOVA_MODELS, settings
+from hybrid_rag.core.chunk_schema import is_sheet
 from hybrid_rag.core.constants import GRAPH_FIELD_SEP
 from hybrid_rag.core.tokenizer import Tokenizer
 from hybrid_rag.ingestion.token_limit import _normalized_child_offsets
@@ -44,6 +46,54 @@ def _page_range(page_offsets: list[dict[str, Any]], starts: list[int], span: tup
     pages = {"page_start": page_offsets[first]["page"], "page_end": page_offsets[last]["page"]}
     images = list(dict.fromkeys(o["image"] for o in page_offsets[first:last + 1] if o.get("image")))
     return {**pages, "images": images} if images else pages
+
+
+def _split_at_sheets(content: str, page_offsets: list[dict[str, Any]] | None) -> list[str]:
+    """Potong ``content`` di setiap awal sheet Excel; dokumen tanpa sheet tetap satu potongan.
+
+    Sheet adalah batas konteks yang sengaja dibuat penulisnya (satu sheet = satu provinsi,
+    satu topik), jadi overlap tidak boleh melewatinya: label sheet A yang bersebelahan dengan
+    URL sheet B membuat LLM menempelkan URL B ke A. Halaman PDF tidak dipotong, karena
+    kalimat memang menyambung antar halaman.
+    """
+    starts = [o["start"] for o in page_offsets or [] if is_sheet(o["page"])]
+    bounds = [0, *starts[1:], len(content)]
+    return [content[a:b] for a, b in zip(bounds, bounds[1:])]
+
+
+def _is_heading(line: str) -> bool:
+    """Markdown heading, atau baris pendek ALL-CAPS tanpa tanda baca akhir (bukan bullet)."""
+    line = line.strip()
+    if line.startswith("#"):
+        return re.match(r"#{1,6}\s", line) is not None
+    if not line or line[0] in "-*•" or len(line) > 150 or len(line.split()) < 2 or line.endswith((".", ",", ";", ":")):
+        return False
+    letters = [ch for ch in line if ch.isalpha()]
+    return len(letters) >= 3 and sum(ch.isupper() for ch in letters) >= 0.8 * len(letters)
+
+
+def _drop_dangling_headings(parents: list[str], overlap: int) -> list[str]:
+    """Buang heading di ekor parent bila parent berikutnya sudah memuatnya (lewat overlap).
+
+    Heading tanpa isinya di ekor chunk membuat LLM mengekstrak entity tanpa relasi,
+    sementara parent berikutnya mengekstrak entity yang sama — dengan nama lain —
+    lengkap dengan relasinya. Tidak ada teks yang hilang: hanya dibuang bila
+    teks itu juga ada di awal parent berikutnya.
+    """
+    # ponytail: heading dikenali dari bentuk teks; ganti dengan heading struktural parser bila ada false positive
+    out = list(parents)
+    for i in range(len(out) - 1):
+        lines = out[i].rstrip().split("\n")
+        tail = len(lines)
+        while tail > 0 and (not lines[tail - 1].strip() or _is_heading(lines[tail - 1])):
+            tail -= 1
+        for cut in range(tail, len(lines)):  # blok terpanjang dulu
+            block = "\n".join(lines[cut:]).strip()
+            kept = "\n".join(lines[:cut]).rstrip()
+            if block and kept.strip() and block in out[i + 1][: len(block) + overlap]:
+                out[i] = kept
+                break
+    return out
 
 
 def chunking_parent_child(
@@ -95,7 +145,11 @@ def chunking_parent_child(
     )
 
     # Split into parents
-    parent_texts = parent_splitter.split_text(content)
+    parent_texts = [
+        parent
+        for segment in _split_at_sheets(content, page_offsets)
+        for parent in _drop_dangling_headings(parent_splitter.split_text(segment), p_overlap)
+    ]
 
     parent_chunks: list[dict[str, Any]] = []
     child_chunks: list[dict[str, Any]] = []

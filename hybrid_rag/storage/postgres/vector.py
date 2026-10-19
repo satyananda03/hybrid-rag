@@ -867,11 +867,7 @@ class PGVectorStorage(BaseVectorStorage):
         # Use positional $4 parameter instead of string-interpolated literal.
         # asyncpg sends the embedding via register_vector binary codec, avoiding
         # per-query text serialization and PostgreSQL text-to-vector parsing.
-        vector_cast = (
-            "halfvec"
-            if getattr(self.db, "vector_index_type", None) == "HNSW_HALFVEC"
-            else "vector"
-        )
+        vector_cast = self._vector_cast()
         if self.namespace == "chunks":
             candidates = settings.hybrid_search_chunk_candidates
             w_semantic = settings.hybrid_search_w_semantic
@@ -900,6 +896,31 @@ class PGVectorStorage(BaseVectorStorage):
                 "embedding": embedding,
             }
         return await self.db.query(sql, params=list(params.values()), multirows=True)
+
+    def _vector_cast(self) -> str:
+        return "halfvec" if getattr(self.db, "vector_index_type", None) == "HNSW_HALFVEC" else "vector"
+
+    async def nearest_entities(
+        self, embeddings: list, top_k: int, max_distance: float
+    ) -> list[list[tuple[str, float]]]:
+        """Per embedding, the workspace's closest stored entities as (name, cosine distance).
+
+        Entity resolution candidates only. Rows still buffered for the next flush
+        are not visible, like ``query``.
+        """
+        sql = SQL_TEMPLATES["entities_nearest"].format(
+            table_name=self.table_name, vector_cast=self._vector_cast()
+        )
+
+        async def one(embedding) -> list[tuple[str, float]]:
+            rows = await self.db.query(
+                sql, params=[self.workspace, max_distance, top_k, embedding], multirows=True
+            )
+            return [(r["entity_name"], float(r["distance"])) for r in rows or []]
+
+        # ponytail: one exact scan per entity (HNSW is off for workspace filters); batch into one
+        # LATERAL query if documents with hundreds of new entities make this slow
+        return list(await asyncio.gather(*(one(e) for e in embeddings)))
 
     async def index_done_callback(self) -> None:
         await self._flush_pending_vector_ops()

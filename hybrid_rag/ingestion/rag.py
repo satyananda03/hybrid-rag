@@ -28,6 +28,11 @@ from hybrid_rag.core.constants import NameSpace
 from hybrid_rag.ingestion.knowledge_graph.extraction import (
     extract_entities,
 )
+from hybrid_rag.ingestion.knowledge_graph.entity_adjudication import EntityAdjudicator
+from hybrid_rag.ingestion.knowledge_graph.entity_resolution import (
+    AliasRegistry,
+    EntityResolver,
+)
 from hybrid_rag.core.exceptions import IndexFlushError
 from hybrid_rag.core.tokenizer import Tokenizer, get_tokenizer
 from hybrid_rag.core.embedding import EmbeddingFunc
@@ -93,16 +98,6 @@ class IngestionRAG(
         default=settings.max_gleaning
     )
     """Maximum number of entity extraction attempts for ambiguous content."""
-
-    entity_extract_max_records: int = field(
-        default=settings.max_extraction_records
-    )
-    """Per-response cap on total entity+relationship rows/records."""
-
-    entity_extract_max_entities: int = field(
-        default=settings.max_extraction_entities
-    )
-    """Per-response cap on entity rows/objects."""
 
     force_llm_summary_on_merge: int = field(
         default=settings.force_llm_summary_on_merge
@@ -345,6 +340,17 @@ class IngestionRAG(
             embedding_func=None,
         )
 
+        # Entity name variants are resolved before the graph merge, for every
+        # document ingested with ``entity_resolution=True`` (the default). Every
+        # part reads and writes this workspace's storages only.
+        self.entity_aliases = AliasRegistry(self.workspace, self.role)
+        self.entity_resolver = EntityResolver(
+            self.entity_aliases,
+            adjudicator=EntityAdjudicator(
+                graph=self.chunk_entity_relation_graph, entity_vdb=self.entities_vdb
+            ),
+        )
+
         self._storages_status = StoragesStatus.CREATED
 
     async def initialize_storages(self):
@@ -379,6 +385,7 @@ class IngestionRAG(
                 self.chunk_entity_relation_graph,
                 self.llm_response_cache,
                 self.doc_status,
+                self.entity_aliases,
             ):
                 if storage:
                     # logger.debug(f"Initializing storage: {storage}")
@@ -443,6 +450,7 @@ class IngestionRAG(
                 ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
                 ("llm_response_cache", self.llm_response_cache),
                 ("doc_status", self.doc_status),
+                ("entity_aliases", self.entity_aliases),
             ]
 
             # Finalize each storage individually to ensure one failure doesn't prevent others from closing
@@ -481,6 +489,7 @@ class IngestionRAG(
         pipeline_status=None,
         pipeline_status_lock=None,
         ontology: str | None = None,
+        orphan_repair: bool = True,
         semaphore: asyncio.Semaphore | None = None,
     ) -> list:
         try:
@@ -488,7 +497,7 @@ class IngestionRAG(
                 chunk,
                 # _build_global_config() is per-RAG-instance; the extraction contract
                 # is per-document, so it rides along as an override rather than a field.
-                global_config={**self._build_global_config(), "kg_ontology": ontology},
+                global_config={**self._build_global_config(), "kg_ontology": ontology, "orphan_repair": orphan_repair},
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,

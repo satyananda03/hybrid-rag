@@ -13,7 +13,14 @@ from hybrid_rag import progress
 from hybrid_rag.config import RagSettings, settings
 from hybrid_rag.core.chunk_schema import format_location, normalize_page
 from hybrid_rag.ingestion.parser import router
-from hybrid_rag.ingestion.chunking.parent_child import _page_range
+from hybrid_rag.ingestion.chunking.parent_child import _drop_dangling_headings, _page_range, chunking_parent_child
+from hybrid_rag.ingestion.knowledge_graph.entity_repairment import (
+    OntologyOrphanRepairOutput,
+    OrphanRepairOutput,
+    accept_repair,
+)
+from hybrid_rag.ingestion.knowledge_graph.schema import EntityExtractionOutput, OntologyExtractionOutput
+from hybrid_rag.ingestion.doc_status_fields import doc_status_reset_metadata, doc_status_transition_metadata
 from hybrid_rag.ingestion.knowledge_graph.chain import get_kg_chains
 from hybrid_rag.ingestion.knowledge_graph.ontology_schema import (
     load_ontology_schema,
@@ -218,6 +225,10 @@ def test_chains_are_built_per_ontology(fake_llm):
     assert onto.schema is not None
     system = onto.extraction_prompt.messages[0].prompt.template
     assert "Peraturan" in system and "{ontology_schema}" not in system
+    repair = {"input_text": "x", "heading_context_block": "", "entity_names": "A", "orphan_names": "B"}
+    # the repair pass answers in its own contract (FakeLLM builds whatever model the chain is bound to)
+    assert type(asyncio.run(default.repair_chain.ainvoke(repair))) is OrphanRepairOutput
+    assert type(asyncio.run(onto.repair_chain.ainvoke(repair))) is OntologyOrphanRepairOutput
 
 def test_location_helpers():
     assert [normalize_page(v) for v in (0, 3, " Rekap ", "", None, True, 1.5)] == [0, 3, "Rekap", None, None, None, None]
@@ -232,6 +243,28 @@ def test_sheet_pages_flow_into_chunk_ranges():
     starts = [o["start"] for o in offsets]
     assert _page_range(offsets, starts, (0, len("isi rekap\n\nisi"))) == {"page_start": "Rekap", "page_end": "Detail"}
     assert page_offsets_of(["teks .md"], [None]) == []
+
+def test_excel_sheets_are_hard_chunk_boundaries():
+    """Label sheet tanpa URL tidak boleh bersebelahan dengan URL sheet lain (kasus Banten vs JABAR)."""
+    from hybrid_rag.core.tokenizer import get_tokenizer
+
+    content_list = [
+        {"type": "text", "text": "Link Data Provinsi BANTEN", "page_idx": "13. BANTEN"},
+        {"type": "text", "text": "Link Data Provinsi JAWA BARAT", "page_idx": "14. JABAR"},
+        {"type": "table", "table_body": "| No |", "page_idx": "14. JABAR"},
+        {"type": "text", "text": "https://drive.google.com/jabar", "page_idx": "14. JABAR"},
+    ]
+    content, items, offsets = separate_content(content_list)
+    parents, children = chunking_parent_child(get_tokenizer(), content, page_offsets=offsets)
+    for chunk in parents + children:
+        assert not ("BANTEN" in chunk["content"] and "jabar" in chunk["content"])
+        assert chunk["sidecar"]["page_start"] == chunk["sidecar"]["page_end"]
+    assert "BANTEN" not in items[0]["_leading_text"]
+
+    # halaman PDF tetap mengalir: kalimat menyambung antar halaman
+    pdf = page_offsets_of(["akhir halaman satu", "awal halaman dua"], [0, 1])
+    parents, _ = chunking_parent_child(get_tokenizer(), "akhir halaman satu\n\nawal halaman dua", page_offsets=pdf)
+    assert len(parents) == 1 and parents[0]["sidecar"] == {"page_start": 0, "page_end": 1}
 
 class RecordingSink:
     def __init__(self):
@@ -610,3 +643,133 @@ def test_ingestion_rag_keeps_purge_and_delete_methods():
 
     for name in ("_chunk_ids_from_storage", "_purge_doc_chunks_and_kg", "adelete_by_doc_id", "_get_existing_llm_cache_ids"):
         assert callable(getattr(IngestionRAG, name)), name
+
+
+def test_dangling_heading_moves_to_the_next_parent():
+    caps = "Direktur Festival : M. ILHAM\n\nDEPUTI 3 ICCN - DATA, PENELITIAN & INDEKS KREATIF"
+    nxt = "DEPUTI 3 ICCN - DATA, PENELITIAN & INDEKS KREATIF\n\na. Direktorat Data & Analitik"
+    md = "Isi sasaran pertama.\n\n## B. Sasaran"
+    md_next = "## B. Sasaran\n\nSasaran pembangunan ..."
+    assert _drop_dangling_headings([caps, nxt, md, md_next], 400) == [
+        "Direktur Festival : M. ILHAM", nxt, "Isi sasaran pertama.", md_next,
+    ]
+    # kept: heading not carried into the next parent, a caps bullet, the last parent, no overlap
+    assert _drop_dangling_headings([caps, "lain sama sekali"], 400) == [caps, "lain sama sekali"]
+    bullet = "Nilai:\n\n- EKRAF BIJAK SEKALI"
+    assert _drop_dangling_headings([bullet, "- EKRAF BIJAK SEKALI\n- lain"], 400)[0] == bullet
+    assert _drop_dangling_headings([nxt, caps], 400) == [nxt, caps]
+    assert _drop_dangling_headings([caps, "x " + nxt], 0) == [caps, "x " + nxt]
+
+
+def test_accept_repair_keeps_only_known_orphan_edges():
+    nodes = {"A": ["a"], "B": ["b"], "O": ["o"], "P": ["p"]}
+    edges = {("A", "B"): ["ab"], ("P", "A"): ["pa"]}
+    repair = {
+        ("O", "A"): ["oa"],    # orphan -> known: kept
+        ("O", "X"): ["ox"],    # X is not a node of the chunk: would become an UNKNOWN node
+        ("B", "A"): ["ba"],    # known <-> known, neither orphan
+        ("A", "P"): ["ap"],    # reverse of an existing edge
+    }
+    assert accept_repair(nodes, edges, {"O", "P"}, repair) == {("O", "A"): ["oa"]}
+
+
+@pytest.mark.parametrize("driver", ["sync", "async"])
+def test_embed_by_index_pairs_vectors_by_index_not_position(driver):
+    from hybrid_rag import providers
+
+    calls = []
+
+    def respond(input):
+        calls.append(list(input))
+        if len(input) == 1:
+            return {"data": [{"index": 0, "embedding": [f"v:{input[0]}"]}]}
+        # what the caching proxy returned: out of order, one input twice, one missing, one out of range
+        return {"data": [{"index": i, "embedding": [f"v:{input[i] if i < len(input) else '?'}"]} for i in (1, 0, 1, 3, 9)]}
+
+    async def acreate(input):
+        return respond(input)
+
+    texts = ["a", "b", "c", "d", "e"]
+    if driver == "sync":
+        vectors = providers.embed_by_index_sync(respond, texts, batch_size=4)
+    else:
+        vectors = asyncio.run(providers.embed_by_index(acreate, texts, batch_size=4))
+    assert vectors == [[f"v:{t}"] for t in "abcde"]
+    assert calls == [["a", "b", "c", "d"], ["e"], ["c"]]  # only the input left without a vector is re-asked
+    assert providers.embed_by_index_sync(respond, [], batch_size=4) == []
+
+
+def test_repair_contract_hides_entities_from_the_model_but_keeps_the_extraction_shape():
+    for repair in (OrphanRepairOutput, OntologyOrphanRepairOutput):
+        schema = repair.model_json_schema()
+        assert list(schema["properties"]) == ["relationships"] and schema["required"] == ["relationships"]
+    assert "entities" in EntityExtractionOutput.model_json_schema()["properties"]
+    assert issubclass(OntologyOrphanRepairOutput, OntologyExtractionOutput)  # parsed as ontology output
+
+    good = {"source": "A", "target": "B", "keywords": ["k1", "k2"], "description": "A berelasi dengan B."}
+    reply = OrphanRepairOutput.model_validate_json(json.dumps({"relationships": [good, {"source": "A"}]}))
+    assert reply.entities == []  # absent from the reply, present on the class for the parser and the cache
+    assert [(r.source, r.keywords) for r in reply.relationships] == [("A", "k1, k2")]  # the extraction validator still runs
+    assert json.loads(reply.model_dump_json())["entities"] == []
+
+
+def test_repair_request_sends_relationships_only(monkeypatch):
+    import httpx
+    from langchain_openai import ChatOpenAI
+
+    from hybrid_rag import providers
+    from hybrid_rag.ingestion.knowledge_graph import chain
+
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        asked = requests[-1]["response_format"]["json_schema"]["schema"]["properties"]
+        message = {"role": "assistant", "content": json.dumps({name: [] for name in asked})}  # an empty answer in the asked shape
+        return httpx.Response(200, json={"id": "x", "object": "chat.completion", "created": 0, "model": "m",
+                                         "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]})
+
+    llm = ChatOpenAI(model="m", api_key="k", base_url="http://llm.test/v1", max_retries=0,
+                     http_async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setitem(providers._hooks, "get_llm", lambda *_, **__: llm)
+    chain._build_chains.cache_clear()
+    chain._extract_llm.cache_clear()
+    try:
+        inputs = {"input_text": "teks", "heading_context_block": "", "entity_names": "A", "orphan_names": "B"}
+        reply = asyncio.run(get_kg_chains().repair_chain.ainvoke(inputs))
+        asyncio.run(get_kg_chains().extraction_chain.ainvoke({"input_text": "teks", "heading_context_block": ""}))
+    finally:
+        chain._build_chains.cache_clear()
+        chain._extract_llm.cache_clear()
+    repair_request, extraction_request = requests
+    sent = lambda request: request["response_format"]["json_schema"]["schema"]["properties"]
+    assert list(sent(repair_request)) == ["relationships"]  # what the model is asked for
+    assert list(sent(extraction_request)) == ["entities", "relationships"]  # the extraction contract is untouched
+    assert type(reply) is OrphanRepairOutput and reply.entities == []
+
+
+def test_ingest_flags_survive_status_transitions_and_resets():
+    doc = {"metadata": {"orphan_repair": False, "prune_isolated": False, "chunk_opts": "stale"}}
+    for payload in (doc_status_transition_metadata(doc), doc_status_reset_metadata(doc)):
+        assert payload["orphan_repair"] is False and payload["prune_isolated"] is False  # False is kept, not "unset"
+
+
+@pytest.mark.parametrize("orphan_repair", [True, False])
+def test_orphan_repair_follows_the_ingest_flag(fake_llm, monkeypatch, orphan_repair):
+    from hybrid_rag.ingestion.knowledge_graph import extraction
+    from hybrid_rag.ingestion.knowledge_graph.schema import ExtractedEntity
+
+    passes = []
+    unlinked = EntityExtractionOutput(entities=[
+        ExtractedEntity(name="Kota A", type="Organization", description="Kota A disebut."),
+        ExtractedEntity(name="Kota B", type="Organization", description="Kota B disebut."),
+    ], relationships=[])
+
+    async def extract(chain, inputs, config, chunk_key, pass_name):
+        passes.append(pass_name)
+        return unlinked if pass_name == "extraction" else None
+
+    monkeypatch.setattr(extraction, "_extract_or_none", extract)
+    chunk = {"c1": {"content": "Kota A dan Kota B.", "file_path": "f", "full_doc_id": "d", "tokens": 5, "chunk_order_index": 0}}
+    asyncio.run(extraction.extract_entities(chunk, {"entity_extract_max_gleaning": 0, "orphan_repair": orphan_repair}))
+    assert ("orphan repair" in passes) is orphan_repair

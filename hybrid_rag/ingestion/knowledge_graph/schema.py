@@ -22,7 +22,7 @@ EntityType = Literal[
 class ExtractedEntity(BaseModel):
     name: str = Field(
         description=(
-            "Canonical name in Title Case (stored title-cased; keep acronyms in ALL CAPS only in description). "
+            "Canonical name in Title Case, but keep official acronyms in ALL CAPS (e.g., 'UU No. 24 Tahun 2019', 'ICCN', 'UMKM'). "
             "Prefix 'Article' with parent regulation (e.g., 'UU No. 24 Tahun 2019 - Pasal 9'), "
             "prefix 'Subsector' with 'Subsektor', and keep 'Person' free of academic/job titles."
         )

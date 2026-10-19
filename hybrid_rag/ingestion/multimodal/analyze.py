@@ -22,12 +22,13 @@ import contextlib
 import os
 import re
 import time
+from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Tuple, TypeVar
 
 from hybrid_rag.core.chunk_schema import format_location, normalize_page
 from hybrid_rag.core.utils import compute_mdhash_id
-from hybrid_rag.ingestion.utils import raise_first_failure
+from hybrid_rag.ingestion.utils import INVALID_OUTPUT_ERRORS, raise_first_failure
 from hybrid_rag.storage.shared import get_storage_keyed_lock
 from hybrid_rag.config import settings
 import logging
@@ -54,6 +55,22 @@ class MultimodalAnalysisError(RuntimeError):
             f"{item_info['type']} item {item_info['index']} "
             f"({format_location(item_info['page_idx']) or 'no page'}) could not be analyzed: {cause}"
         )
+
+
+T = TypeVar("T")
+
+
+async def retry_invalid_output_once(call: Callable[[], Awaitable[T]], label: str) -> T:
+    """``await call()``, asked once more if the model's reply breaks its output schema.
+
+    A malformed reply is never cached, so the retry really asks the model again.
+    A second invalid reply, and any other error, propagates to the caller.
+    """
+    try:
+        return await call()
+    except INVALID_OUTPUT_ERRORS as e:
+        logger.warning(f"{label}: invalid model output, retrying once: {str(e)[:500]}")
+        return await call()
 
 
 class ImageUnavailableError(RuntimeError):
@@ -128,16 +145,18 @@ class _AnalyzeMixin:
             graph in a single merge pass.
 
         Raises:
-            MultimodalAnalysisError: an item could not be described after the
-                client's retries. Fatal by design, like ``ImageUnavailableError``.
+            MultimodalAnalysisError: an item could not be described — its reply
+                was still invalid after one retry, or the call failed after the
+                client's retries on transient errors. Fatal by design, like
+                ``ImageUnavailableError``.
         """
 
-        kg_ontology: str | None = None
+        doc_metadata: dict[str, Any] = {}
         try:
             existing_doc_status = await self.doc_status.get_by_id(doc_id)
             # Figures and tables belong to the same document as its text, so they
-            # must be extracted under the same ontology.
-            kg_ontology = ((existing_doc_status or {}).get("metadata") or {}).get("kg_ontology")
+            # must be extracted under the same contract (ontology, orphan repair).
+            doc_metadata = (existing_doc_status or {}).get("metadata") or {}
         except Exception:
             pass
 
@@ -169,12 +188,16 @@ class _AnalyzeMixin:
             cache_keys: List[str] = []
             async with semaphore:
                 try:
-                    description, entity_info = await processor.generate_description_only(
-                        modal_content=item,
-                        content_type=content_type,
-                        item_info=item_info,
-                        entity_name=None,  # Let LLM auto-generate
-                        cache_keys=cache_keys,
+                    description, entity_info = await retry_invalid_output_once(
+                        partial(
+                            processor.generate_description_only,
+                            modal_content=item,
+                            content_type=content_type,
+                            item_info=item_info,
+                            entity_name=None,  # Let LLM auto-generate
+                            cache_keys=cache_keys,
+                        ),
+                        label=f"{content_type} item {item_info['index']}",
                     )
                 except Exception as e:
                     raise MultimodalAnalysisError(item_info, e) from e
@@ -232,7 +255,10 @@ class _AnalyzeMixin:
         # longer waits behind it.
         extraction = asyncio.create_task(
             self._extract_modal_entities(
-                modal_chunks, ontology=kg_ontology, semaphore=extract_semaphore
+                modal_chunks,
+                ontology=doc_metadata.get("kg_ontology"),
+                orphan_repair=doc_metadata.get("orphan_repair", True),
+                semaphore=extract_semaphore,
             )
         )
         try:
@@ -598,6 +624,7 @@ class _AnalyzeMixin:
         self,
         modal_chunks: Dict[str, Any],
         ontology: str | None = None,
+        orphan_repair: bool = True,
         semaphore: asyncio.Semaphore | None = None,
     ) -> List[Tuple]:
         """Extract entities and relations from modal chunks with the text pipeline's extractor."""
@@ -616,7 +643,7 @@ class _AnalyzeMixin:
         # Same extractor as the text chunks
         chunk_results = await extract_entities(
             chunks={k: {**c, "content": _NEIGHBOR_TEXT.sub("", c["content"])} for k, c in modal_chunks.items()},
-            global_config={**self._build_global_config(), "kg_ontology": ontology},
+            global_config={**self._build_global_config(), "kg_ontology": ontology, "orphan_repair": orphan_repair},
             pipeline_status=pipeline_status,
             pipeline_status_lock=pipeline_status_lock,
             llm_response_cache=self.llm_response_cache,

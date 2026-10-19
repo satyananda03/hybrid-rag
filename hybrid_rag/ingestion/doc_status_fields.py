@@ -190,6 +190,11 @@ def read_source_file_basename(data: Any) -> str | None:
 _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "source_file",
     "kg_ontology",
+    "kg_entity_registry",
+    "entity_resolution",
+    "entity_resolution_llm",
+    "orphan_repair",
+    "prune_isolated",
     "save_parent",
     "chunk_opts",
     "parse_start_time",
@@ -244,6 +249,11 @@ def doc_status_transition_metadata(
 _DOC_STATUS_METADATA_DIRECTIVE_KEYS: tuple[str, ...] = (
     "source_file",
     "kg_ontology",
+    "kg_entity_registry",
+    "entity_resolution",
+    "entity_resolution_llm",
+    "orphan_repair",
+    "prune_isolated",
     "save_parent",
 )
 

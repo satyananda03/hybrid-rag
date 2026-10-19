@@ -1,0 +1,219 @@
+"""
+One-to-one extraction strategy.
+Processes each page independently and returns multiple models.
+"""
+
+from typing import Any, List, Tuple, Type
+
+from docling_core.types.doc import DoclingDocument
+from pydantic import BaseModel
+
+from ....exceptions import ExtractionError
+from ....logging_utils import ProgressTracker, get_component_logger
+from ....protocols import (
+    Backend,
+    ExtractionBackendProtocol,
+    TextExtractionBackendProtocol,
+    get_backend_type,
+    is_llm_backend,
+    is_vlm_backend,
+)
+from ..document_processor import DocumentProcessor
+from ..extractor_base import BaseExtractor
+
+logger = get_component_logger("OneToOneStrategy", __name__)
+
+
+class OneToOneStrategy(BaseExtractor):
+    """One-to-one extraction strategy.
+    Extracts one model per page/item using Protocol-based type checking.
+    """
+
+    def __init__(
+        self,
+        backend: Backend,
+        docling_config: str = "default",
+        llm_input_format: str = "markdown",
+        docling_serve_config: dict[str, Any] | None = None,
+    ) -> None:
+        """Initialize with a backend (VlmBackend or LlmBackend).
+
+        Args:
+            backend: Extraction backend instance implementing either
+                ExtractionBackendProtocol or TextExtractionBackendProtocol.
+            docling_config: Docling pipeline configuration ('ocr' or 'vision').
+            llm_input_format: Document serialization for the LLM ('markdown',
+                'doclang', or 'doclang-geo').
+            docling_serve_config: When set, document conversion is delegated
+                to a remote docling-serve instance (see DocumentProcessor).
+        """
+        super().__init__()  # Initialize base extractor with trace_data attribute
+        self.backend = backend
+        self.doc_processor = DocumentProcessor(
+            docling_config=docling_config,
+            llm_input_format=llm_input_format,
+            docling_serve_config=docling_serve_config,
+        )
+
+        backend_type = get_backend_type(self.backend)
+        logger.info(
+            "Initialized with %s backend: %s",
+            backend_type.upper(),
+            self.backend.__class__.__name__,
+        )
+
+    def extract(
+        self, source: str, template: Type[BaseModel]
+    ) -> Tuple[List[BaseModel], DoclingDocument | None]:
+        """Extract data using one-to-one strategy.
+
+        For VLM: Uses direct VLM extraction (already page-based).
+        For LLM: Converts to markdown and processes each page separately.
+
+        Args:
+            source: Path to the source document.
+            template: Pydantic model template to extract into.
+
+        Returns:
+            Tuple containing:
+                - List of extracted Pydantic model instances (one per page).
+                - The DoclingDocument object used during extraction (or None if extraction failed).
+        """
+        try:
+            if is_vlm_backend(self.backend):
+                logger.info("Using VLM backend for extraction")
+                return self._extract_with_vlm(self.backend, source, template)
+            elif is_llm_backend(self.backend):
+                logger.info("Using LLM backend for extraction")
+                return self._extract_with_llm(self.backend, source, template)
+            else:
+                backend_class = self.backend.__class__.__name__
+                raise TypeError(
+                    f"Backend '{backend_class}' does not implement a recognized extraction protocol. "
+                    "Expected either a VLM or LLM backend."
+                )
+        except ExtractionError:
+            # Conversion/extraction failures carry a precise cause (auth,
+            # timeout, HTTP status, ...) — let the pipeline surface it instead
+            # of laundering it into an empty result.
+            raise
+        except Exception as e:
+            logger.error("Extraction error: %s", e)
+            return [], None
+
+    def _extract_with_vlm(
+        self, backend: ExtractionBackendProtocol, source: str, template: Type[BaseModel]
+    ) -> Tuple[List[BaseModel], DoclingDocument | None]:
+        """VLM path: delegate to document-level extraction."""
+        models = backend.extract_from_document(source, template)
+        return models, None
+
+    def extract_from_document(
+        self, document: DoclingDocument, template: Type[BaseModel]
+    ) -> Tuple[List[BaseModel], DoclingDocument | None]:
+        """Extract page-by-page from a pre-converted DoclingDocument (no file conversion)."""
+        if not is_llm_backend(self.backend):
+            raise TypeError("Pre-converted DoclingDocument input requires the LLM backend")
+        return self._extract_pages(self.backend, document, template, 0.0)
+
+    def _extract_with_llm(
+        self, backend: TextExtractionBackendProtocol, source: str, template: Type[BaseModel]
+    ) -> Tuple[List[BaseModel], DoclingDocument | None]:
+        """LLM path: convert to markdown and process per page."""
+        import time
+
+        conversion_started_at = time.time()
+        document = self.doc_processor.convert_to_docling_doc(source)
+        conversion_runtime_seconds = time.time() - conversion_started_at
+        return self._extract_pages(backend, document, template, conversion_runtime_seconds)
+
+    def _extract_pages(
+        self,
+        backend: TextExtractionBackendProtocol,
+        document: DoclingDocument,
+        template: Type[BaseModel],
+        conversion_runtime_seconds: float,
+    ) -> Tuple[List[BaseModel], DoclingDocument | None]:
+        """Process each page of a DoclingDocument independently."""
+        import time
+
+        page_markdown_started_at = time.time()
+        page_markdowns = self.doc_processor.extract_page_markdowns(document)
+        conversion_runtime_seconds += time.time() - page_markdown_started_at
+
+        extracted_models: List[BaseModel] = []
+        total_pages = len(page_markdowns)
+
+        # Capture page trace when debug/trace is enabled
+        if hasattr(self, "trace_data") and self.trace_data:
+            for page_num, page_md in enumerate(page_markdowns, start=1):
+                self.trace_data.emit(
+                    "page_markdown_extracted",
+                    "extraction",
+                    {"page_number": page_num, "text_content": page_md, "metadata": {}},
+                )
+            if not page_markdowns:
+                self.trace_data.emit(
+                    "page_markdown_extracted",
+                    "extraction",
+                    {"page_number": 1, "text_content": "", "metadata": {}},
+                )
+            self.trace_data.emit(
+                "docling_conversion_completed",
+                "extraction",
+                {
+                    "runtime_seconds": conversion_runtime_seconds,
+                    "page_count": len(page_markdowns) if page_markdowns else 1,
+                    "source": "docling_document_conversion",
+                },
+            )
+
+        progress = ProgressTracker(logger, total=total_pages, label="Page extraction", unit="page")
+        extraction_id = 0
+        for page_num, page_md in enumerate(page_markdowns, start=1):
+            start_time = time.time()
+            error = None
+
+            try:
+                model = backend.extract_from_markdown(
+                    markdown=page_md,
+                    template=template,
+                    context=f"page {page_num}",
+                    is_partial=True,
+                )
+            except Exception as e:
+                error = str(e)
+                model = None
+
+            extraction_time = time.time() - start_time
+
+            # Capture trace data if enabled
+            if hasattr(self, "trace_data") and self.trace_data:
+                extraction_metadata: dict[str, Any] = {}
+                backend_diag = getattr(backend, "last_call_diagnostics", None)
+                if isinstance(backend_diag, dict) and backend_diag:
+                    extraction_metadata.update(backend_diag)
+                self.trace_data.emit(
+                    "extraction_completed" if error is None else "extraction_failed",
+                    "extraction",
+                    {
+                        "extraction_id": extraction_id,
+                        "source_type": "page",
+                        "source_id": page_num - 1,
+                        "parsed_model": model,
+                        "extraction_time": extraction_time,
+                        "error": error,
+                        "metadata": extraction_metadata,
+                    },
+                )
+                extraction_id += 1
+
+            if model:
+                extracted_models.append(model)
+                progress.advance(note=f"page {page_num}")
+            else:
+                logger.warning("No model extracted from page %s", page_num)
+                progress.advance(note=f"page {page_num} (no model)")
+
+        progress.finish(note=f"{len(extracted_models)} model(s) extracted")
+        return extracted_models, document

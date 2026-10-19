@@ -1,0 +1,324 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docling_graph"
+version = "1.9.1"
+description = "A tool to convert documents into knowledge graphs using Docling."
+
+license = { text = "MIT License" }
+keywords = ["docling", "knowledge-graph", "nlp", "pdf", "graph"]
+classifiers = [
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",    
+]
+readme = "README.md"
+authors = [
+  { name = "Ayoub El Bouchtili", email = "ayoub.elbouchtili@fr.ibm.com" },
+  { name = "Michele Dolfi", email = "dol@zurich.ibm.com" },
+  { name = "Maxime Gillot", email = "Maxime.Gillot@ibm.com" },
+  { name = "Sophie Lang", email = "sophie.lang@de.ibm.com" },
+  { name = "Guilhaume Leroy Meline", email = "guilhaume@fr.ibm.com" },
+  { name = "Peter Staar", email = "taa@zurich.ibm.com" },
+]
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    # DocLang input/export + serializer surface requires docling>=2.100 /
+    # docling-core>=2.86. The docling.service_client SDK used for remote
+    # docling-serve conversion needs >=2.104 (aligned convert(source=) API;
+    # all imported exceptions exist since 2.102); floor set at 2.105.0,
+    # whose service-client surface is identical to the locked version and
+    # carries the multipart nested-options encoding fix (#3672).
+    "docling>=2.105.0,<3.0.0",
+    "docling-core[chunking, chunking-openai]>=2.86.0,<3.0.0",
+    "pydantic>=2.0.0,<3.0.0",
+    "networkx>=3.0.0,<4.0.0",
+    "rich>=13,<16",
+    "typer[all]>=0.12,<1.0.0",
+    "python-dotenv>=1.0,<2.0",
+    "litellm>=1.0.0,<2.0.0",
+    "pyyaml>=6.0,<7.0",
+    "aiofiles>=24.0.0,<26.0.0",
+    "tenacity>=9.1.4",
+    # URL input handling (docling-serve conversion uses docling.service_client)
+    "requests>=2.31,<3.0",
+]
+
+[project.urls]
+homepage = "https://github.com/docling-project/docling-graph"
+repository = "https://github.com/docling-project/docling-graph"
+issues = "https://github.com/docling-project/docling-graph/issues"
+changelog = "https://github.com/docling-project/docling-graph/blob/main/CHANGELOG.md"
+
+[project.scripts]
+docling-graph = "docling_graph.cli.main:main"
+
+[project.optional-dependencies]
+vlm = [
+    "docling[vlm]>=2.105.0,<3.0.0",
+]
+# Legacy provider SDKs removed; LiteLLM is installed by default.
+# Amazon Bedrock routes through LiteLLM but needs boto3 for the AWS
+# credential chain and SigV4 signing.
+bedrock = [
+    "boto3>=1.34.0,<2.0.0",
+]
+semantic = [
+    "rapidfuzz",
+]
+# Ontology-based template generation (docling-graph template from-ontology):
+# rdflib for OWL/RDFS/SKOS, linkml-runtime for LinkML SchemaView. The JSON
+# Schema compiler is stdlib-only and needs neither.
+templategen = [
+    "rdflib>=7.0,<8.0",
+    "linkml-runtime>=1.7,<2.0",
+]
+
+
+
+
+
+
+
+[dependency-groups]
+# Development tools (linters, type-checkers) and utilities
+dev = [
+    "pre-commit~=4.5",
+    "mypy~=1.10",
+    "types-setuptools>=80.9,<85.0",
+    "pandas-stubs~=2.1",
+    "types-openpyxl~=3.1",
+    "types-requests~=2.31",
+    "boto3-stubs~=1.37",
+    "types-urllib3~=1.26",
+    "types-tqdm~=4.67",
+    "coverage~=7.6",
+    "pytest~=9.0",
+    "pytest-cov>=6.1.1",
+    "pytest-dependency~=0.6",
+    "pytest-durations>=1.6.1,<1.10.0",
+    "pytest-xdist~=3.3",
+    "ipykernel~=7.1",
+    "nbqa~=1.9",
+    "python-semantic-release>=9.0.0",
+    "mypy>=1.4.0",
+    "ruff>=0.0.280",
+    # Documentation tools
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.0.0",
+    "mkdocstrings[python]>=0.24.0",
+    "pymdown-extensions>=10.0.0",
+]
+
+# Test stack and utilities
+test = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.11.0",
+    "pytest-xdist>=3.3.0",
+    "pytest-timeout>=2.1.0",
+    "hypothesis>=6.82.0",
+    "pytest-asyncio>=0.21.0",
+    "freezegun>=1.2.2",
+    "responses>=0.23.0",
+    "faker>=19.0.0",
+    "types-PyYAML",
+    "types-requests",
+    "mypy>=1.4.0",
+    # Cypher exporter integration tests (skip cleanly when Docker is absent)
+    "neo4j>=5.20.0",
+    "testcontainers>=4.8.0",
+]
+
+# Notebook-related tools and data analysis helpers
+notebook = [
+    "notebook",
+    "ipython",
+    "pandas",
+]
+
+[tool.uv]
+package = true
+default-groups = ["dev", "test", "notebook"]
+
+[tool.setuptools.packages.find]
+include = ["docling_graph*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+respect-gitignore = true
+
+[tool.ruff.format]
+skip-magic-trailing-comma = false
+
+[tool.ruff.lint]
+select = [
+  "E",    # pycodestyle errors
+  "W",    # pycodestyle warnings
+  "F",    # pyflakes
+  "I",    # isort
+  "N",    # pep8-naming
+  "UP",   # pyupgrade
+  "B",    # flake8-bugbear
+  "A",    # flake8-builtins
+  "C4",   # flake8-comprehensions
+  "C90",  # mccabe (complexity)
+  "ANN",  # flake8-annotations
+  "PD",   # pandas-vet
+  "PIE",  # flake8-pie
+  "Q",    # flake8-quotes
+  "RUF",  # Ruff-specific checks
+  "ASYNC" # async
+]
+ignore = [
+  "C408",   # Unnecessary `dict()` call (rewrite as a literal)
+  "E501",   # Line too long, handled by ruff formatter
+  "D107",   # "Missing docstring in __init__",
+  "F401",   # imported but unused; consider using `importlib.util.find_spec` to test for "
+  "F811",   # "redefinition of the same function"
+  "PL",     # Pylint
+  "RUF012", # Mutable Class Attributes
+  "UP006",  # List vs list, etc
+  "UP007",  # Option and Union
+  "UP035",  # `typing.Set` is deprecated, use `set` instead"
+  # "ANN101",  # Missing type annotation for self
+  # "ANN102",  # Missing type annotation for cls
+  "ANN401",  # Dynamically typed expressions (Any)
+]
+
+[tool.ruff.lint.pep8-naming]
+classmethod-decorators = [
+  # Allow Pydantic's `@validator` decorator to trigger class method treatment.
+  "pydantic.validator",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402", "F401"]
+"tests/**/*.py" = ["ASYNC", "ANN201", "ANN001"]
+# Rendered templategen goldens keep the schema-definition docs' Optional[...]
+# idiom (template-basics.md required imports) instead of `X | None`.
+"tests/fixtures/templategen/golden/*.py" = ["UP045"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 30
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.mypy]
+pretty = true
+python_version = "3.12"
+no_implicit_optional = true
+exclude = ["^site/", "^docs/examples/"]
+plugins = "pydantic.mypy"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_optional = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "docling.*",
+    "rich.*",
+    "typer.*",
+    "yaml.*",
+    "pandas.*",
+    "networkx.*",
+    "litellm.*",
+    "tiktoken.*",
+    "google.*",
+    "rapidfuzz",
+]
+ignore_missing_imports = true
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+version_variables = ["docling_graph/__init__.py:__version__"]
+commit_message = "chore(release): bump package version to {version}"
+
+# Prevent automatic major version bumps - major releases require manual Git tags
+major_on_zero = false
+allow_zero_version = false
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+# Custom commit parser to cap BREAKING CHANGE at minor releases
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["feat", "fix", "perf", "refactor", "docs", "style", "test", "build", "ci", "chore"]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf", "refactor"]
+
+[tool.semantic_release.changelog]
+# Update mode: insert new release after insertion_flag (see CHANGELOG.md).
+mode = "update"
+insertion_flag = "<!-- version list -->"
+exclude_commit_patterns = [
+  "chore\\(release\\):.*",  # exclude version-bump commits from changelog
+]
+
+[tool.semantic_release.changelog.default_templates]
+changelog_file = "CHANGELOG.md"
+
+[tool.semantic_release.changelog.environment]
+block_start_string = "{%"
+block_end_string = "%}"
+variable_start_string = "{{"
+variable_end_string = "}}"
+comment_start_string = "{#"
+comment_end_string = "#}"
+trim_blocks = false
+lstrip_blocks = false
+newline_sequence = "\n"
+keep_trailing_newline = false
+extensions = []
+autoescape = true
+
+[tool.semantic_release.remote]
+name = "origin"
+type = "github"
+ignore_token_for_push = false
+
+[tool.semantic_release.publish]
+dist_glob_patterns = ["dist/*"]
+upload_to_vcs_release = true
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "error",
+    # Ignore ResourceWarnings from unclosed sockets/event loops
+    "ignore::ResourceWarning",
+    # Ignore warnings from external dependencies
+    "ignore:.*Use BaseMetaSerializer.*:DeprecationWarning",
+    "ignore:.*Using `@model_validator` with mode='after' on a classmethod is deprecated.*:pydantic.warnings.PydanticDeprecatedSince212",
+]
+addopts = "--cov=docling_graph --cov-report=term-missing"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["docling_graph"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]

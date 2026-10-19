@@ -57,9 +57,10 @@ entity_extraction:
     </entity_types>
 
     <constraints>
-    - RECORD LIMITS: Output at most {max_entity_records} entities and {max_total_records} total records (entities + relationships). Prioritize high-value connectivity; output fewer if the chunk lacks substance.
+    - SUBSTANCE: Output fewer records if the chunk lacks substance.
     - STRICT TYPING: Only extract entities belonging to the `<entity_types>`. NEVER extract generic nouns, standalone dates, pure numbers/rupiah amounts, generic locations ("Indonesia"), or broad terms ("Pemerintah", "Masyarakat", "Pelaku Usaha", "Data").
     - REFERENTIAL INTEGRITY: Every relationship's `source` and `target` MUST exactly match an extracted entity `name` in this same response. Do not output duplicate, reverse-duplicate, or self-loop relationships.
+    - STABLE NAMING: Name an organizational unit or plan by its short official name; put descriptive subtitles, translations or parenthetical labels in `description`, not in `name`. Never extract a heading that has no body text after it in `<input_text>`.
     - LANGUAGE: Write all descriptions and keywords in Bahasa Indonesia; keep official acronyms in ALL CAPS.
     </constraints>
 
@@ -98,10 +99,9 @@ ontology_entity_extraction:
        the relationship direction. Do not output duplicates.
 
     4. LIMITS & PRIORITIZATION
-       - At most {max_total_records} total records across entities and relationships in this response.
-       - At most {max_entity_records} entity objects in this response.
-       - Output fewer if fewer high-value items exist. Do not pad to reach the limit.
+       - Output fewer if fewer high-value items exist. Do not pad.
        - Only output a relationship when both its `source` and `target` are among the entities in this same response.
+       - Name an organizational unit or plan by its short official name; put descriptive subtitles, translations or parenthetical labels in `description`. Never extract a heading that has no body text after it in `<input_text>`.
        - Order relationships by how central they are to the meaning of the input text.
 
     5. CONTEXT & OBJECTIVITY
@@ -130,10 +130,33 @@ entity_continue_extraction:
     - Do NOT repeat entities or relationships that were already correct and complete.
     - Output a missed entity or relationship now.
     - Re-output a corrected, complete version of anything described incorrectly.
-    - At most {max_total_records} total records and {max_entity_records} entity objects in this response. Fewer if fewer corrections remain.
     - A relationship may reference an entity already extracted correctly; do not repeat that entity object unless it was missing or wrong.
     - Write the output in Bahasa Indonesia; keep proper nouns untranslated.
     - If nothing was missed and nothing needs correcting, return empty entity and relationship lists.
+    </constraints>
+
+orphan_relation_repair:
+  user_prompt: |
+    {heading_context_block}<input_text>
+    {input_text}
+    </input_text>
+
+    <entities>
+    {entity_names}
+    </entities>
+
+    <unlinked>
+    {orphan_names}
+    </unlinked>
+
+    <instructions>
+    For each name in `<unlinked>`, output the relationships `<input_text>` states explicitly between it and another name in `<entities>` or `<unlinked>`.
+    </instructions>
+
+    <constraints>
+    - ENDPOINTS: Copy `source` and `target` exactly from `<entities>` or `<unlinked>`; those lists are the entities of this response, so there is no `entities` to output.
+    - EVIDENCE: Never infer from proximity, co-occurrence, or a shared heading; leave an entity unlinked when the text states no relationship for it.
+    - LANGUAGE: Descriptions and keywords in Bahasa Indonesia; keep proper nouns untranslated.
     </constraints>
 
 section_context:
@@ -173,10 +196,10 @@ keywords_extraction:
     </user_query>
 
 summarize_entity_descriptions:
-  user_prompt: |
+  system_prompt: |
     <role>
     ROLE : You are a Knowledge Graph Specialist, proficient in data curation and synthesis.
-    LANGUAGE : Bahasa Indonesia
+    LANGUAGE : BAHASA INDONESIA
     </role>
 
     <task>
@@ -187,25 +210,28 @@ summarize_entity_descriptions:
     1. INPUT FORMAT
        The description list is JSON: one object per line inside `<description_list>`.
 
-    2. OUTPUT FORMAT
-       Plain text in multiple paragraphs. No formatting, no remarks before or after the summary.
-
-    3. COMPREHENSIVENESS
+    2. COMPREHENSIVENESS
        Integrate the key information from *every* description. Omit no important fact.
 
-    4. CONTEXT & OBJECTIVITY
+    3. CONTEXT & OBJECTIVITY
        Write from an objective, third-person perspective. Name the entity or relation in full at the start, so the summary is immediately clear on its own.
 
-    5. CONFLICT HANDLING
+    4. CONFLICT HANDLING
        When descriptions conflict, first decide whether they actually describe distinct entities or relations sharing a name. If so, summarize each separately within the output. If the conflict is within a single one (e.g. historical discrepancies), reconcile it, or present both readings and note the uncertainty.
-
-    6. LENGTH
-       Stay within {summary_length} tokens while keeping depth and completeness.
-
-    7. LANGUAGE
-       Write the entire summary in Bahasa Indonesia.
     </instructions>
 
+    <constraints>
+    1. OUTPUT FORMAT
+       Plain text in multiple paragraphs. No formatting, no remarks before or after the summary.
+
+    2. LENGTH
+       Stay within {summary_length} tokens while keeping depth and completeness.
+
+    3. LANGUAGE
+       Write the entire summary in Bahasa Indonesia.
+    </constraints>
+
+  user_prompt: |
     <input>
     {description_type} Name: {description_name}
 

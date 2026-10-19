@@ -68,6 +68,10 @@ class FakeGraph:
                 out[(p["src"], p["tgt"])] = edge
         return out
 
+    async def node_degrees_batch(self, names):
+        # like Neo4j: a name with no node comes back as degree 0
+        return {n: sum(n in e for e in self.edges) for n in names}
+
     async def get_nodes_edges_batch(self, names):
         return {n: [e for e in self.edges if n in e] for n in names}
 
@@ -83,6 +87,8 @@ class FakeGraph:
 
 
 class FakeRag(_PurgeMixin, _DeletionMixin):
+    workspace = "test"
+
     def __init__(self):
         self.log = []
         sep = GRAPH_FIELD_SEP
@@ -111,6 +117,7 @@ class FakeRag(_PurgeMixin, _DeletionMixin):
             "status": "processed", "file_path": "a.md", "chunks_list": ["c1", "c2"], "metadata": {},
         }})
         self.llm_response_cache = FakeKV("llm_response_cache", self.log, {"k1": {}, "k2": {}, "k3": {}})
+        self.entity_resolver = None
         self.chunk_entity_relation_graph = FakeGraph(
             self.log,
             nodes={
@@ -256,3 +263,23 @@ def test_resume_purge_store_calls(harness):
     ]
     assert stages == []  # the resume path reports no deletion stages
     assert "doc-1" in rag.doc_status.rows and "doc-1" in rag.full_docs.rows
+
+
+def test_prune_removes_only_isolated_non_multimodal_entities(harness):
+    rag, _, _ = harness
+    rag.chunk_entity_relation_graph.nodes.update({
+        "D": {"entity_id": "D", "entity_type": "organization"},
+        "T": {"entity_id": "T", "entity_type": "table"},
+    })
+    # A, B link to something; D and T have no edge; Z has no node at all
+    rag.full_entities.rows["doc-1"] = {"entity_names": ["A", "B", "D", "T", "Z"], "count": 5}
+
+    assert asyncio.run(rag._prune_isolated_entities(["doc-1", "doc-2"])) == {"D"}
+    assert set(rag.chunk_entity_relation_graph.nodes) == {"A", "B", "C", "T"}
+    assert rag.full_entities.rows["doc-1"] == {"entity_names": ["A", "B", "T", "Z"], "count": 4}
+    assert ("entity_chunks", "delete", ["D"]) in rag.log
+    assert rag.log[-1] == ("rag", "_insert_done", None)
+    # nothing left to prune: no store is written
+    log_size = len(rag.log)
+    assert asyncio.run(rag._prune_isolated_entities(["doc-1"])) == set()
+    assert len(rag.log) == log_size

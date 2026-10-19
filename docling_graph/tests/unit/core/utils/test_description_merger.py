@@ -1,0 +1,166 @@
+"""Unit tests for description merger."""
+
+from typing import NoReturn
+
+import pytest
+
+from docling_graph.core.utils.description_merger import (
+    merge_descriptions,
+    truncate_at_sentence_boundary,
+)
+
+
+def test_truncate_short():
+    assert truncate_at_sentence_boundary("Short text.", 100) == "Short text."
+
+
+def test_truncate_at_sentence():
+    long_text = "First sentence. Second sentence. Third sentence."
+    out = truncate_at_sentence_boundary(long_text, 30)
+    assert out.endswith(".")
+    assert len(out) <= 30
+    assert "First sentence." in out
+
+
+def test_truncate_empty():
+    assert truncate_at_sentence_boundary("", 100) == ""
+    assert truncate_at_sentence_boundary("x", 0) == ""
+
+
+def test_merge_empty_existing():
+    assert merge_descriptions("", "New text.", 1000) == "New text."
+
+
+def test_merge_empty_new():
+    assert merge_descriptions("Existing.", "", 1000) == "Existing."
+
+
+def test_merge_duplicate_sentence_not_added():
+    result = merge_descriptions("First sentence.", "First sentence.", 1000)
+    assert result == "First sentence."
+
+
+def test_merge_adds_new_sentence():
+    result = merge_descriptions("First sentence.", "Second sentence.", 1000)
+    assert "First sentence" in result
+    assert "Second sentence" in result
+
+
+def test_merge_truncates():
+    a = "A. " * 200
+    b = "B. " * 200
+    result = merge_descriptions(a, b, 50)
+    assert len(result) <= 50
+    assert result.endswith(".") or result == ""
+
+
+def test_merge_new_contained_in_existing():
+    result = merge_descriptions("Long existing with bit.", "with bit.", 1000)
+    assert result == "Long existing with bit."
+
+
+def test_merge_with_summarizer_when_above_threshold():
+    def summarizer(existing: str, new_list: list) -> str:
+        return "Summarized: " + existing[:10] + " + " + str(len(new_list)) + " new."
+
+    result = merge_descriptions(
+        "First part. " * 200,
+        "Second part. " * 200,
+        max_length=5000,
+        summarizer=summarizer,
+        summarizer_min_total_length=100,
+    )
+    assert "Summarized:" in result
+
+
+def test_merge_summarizer_below_threshold_uses_sentence_dedup():
+    calls = []
+
+    def summarizer(existing: str, new_list: list) -> str:
+        calls.append(1)
+        return "Only if used."
+
+    result = merge_descriptions(
+        "Short.",
+        "Also short.",
+        max_length=5000,
+        summarizer=summarizer,
+        summarizer_min_total_length=10_000,
+    )
+    assert len(calls) == 0
+    assert "Short" in result and "Also short" in result
+
+
+def test_merge_summarizer_failure_fallback():
+    def summarizer(_e, _n) -> NoReturn:
+        raise ValueError("mock failure")
+
+    result = merge_descriptions(
+        "A. " * 300,
+        "B. " * 300,
+        max_length=5000,
+        summarizer=summarizer,
+        summarizer_min_total_length=100,
+    )
+    assert "A." in result
+
+
+def test_merge_summarizer_failure_logs_warning(caplog):
+    """When summarizer raises, except block runs and logger.warning is emitted (line 99)."""
+
+    def summarizer(_e, _n) -> NoReturn:
+        raise RuntimeError("summarizer error")
+
+    with caplog.at_level("WARNING"):
+        result = merge_descriptions(
+            "X. " * 200,
+            "Y. " * 200,
+            max_length=5000,
+            summarizer=summarizer,
+            summarizer_min_total_length=100,
+        )
+    assert "X." in result
+    assert "Description summarizer failed" in caplog.text
+    assert "summarizer error" in caplog.text
+
+
+def test_merge_sentence_dedup_mix_duplicate_and_new():
+    """Sentence loop: one sentence already in existing, one new (s not in existing true and false)."""
+    existing = "A. B."
+    new = "B. C."
+    result = merge_descriptions(existing, new, max_length=1000)
+    assert "A." in result and "B." in result and "C." in result
+
+
+def test_merge_summarizer_returns_empty_string_uses_sentence_dedup_fallback():
+    """When summarizer returns empty string, merge falls back to sentence-dedup path."""
+
+    def summarizer(_e: str, _n: list) -> str:
+        return ""
+
+    result = merge_descriptions(
+        "First sentence. " * 50,
+        "Second sentence. " * 50,
+        max_length=5000,
+        summarizer=summarizer,
+        summarizer_min_total_length=100,
+    )
+    assert "First sentence" in result
+    assert "Second sentence" in result
+
+
+def test_merge_summarizer_returns_non_string_uses_sentence_dedup_fallback():
+    """When summarizer returns non-string (e.g. None), merge falls back to sentence-dedup."""
+
+    def summarizer(_e: str, _n: list) -> None:
+        return None
+
+    result = merge_descriptions(
+        "Alpha. " * 50,
+        "Beta. " * 50,
+        max_length=5000,
+        summarizer=summarizer,
+        summarizer_min_total_length=100,
+    )
+    assert "Alpha" in result
+    assert "Beta" in result

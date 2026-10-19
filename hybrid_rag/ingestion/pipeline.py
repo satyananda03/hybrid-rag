@@ -31,6 +31,7 @@ from hybrid_rag.core.exceptions import (
 from hybrid_rag.storage.shared import get_namespace_data, get_namespace_lock
 from hybrid_rag.ingestion.knowledge_graph.extraction import merge_nodes_and_edges
 from hybrid_rag.ingestion.knowledge_graph.ontology_schema import load_ontology_schema
+from hybrid_rag.ingestion.knowledge_graph.entity_resolution import load_entity_registry
 from hybrid_rag.ingestion.parse_stage import parse_stored_document
 from hybrid_rag.ingestion.multimodal.analyze import resolve_image_sources
 from hybrid_rag.ingestion.token_limit import enforce_chunk_token_limit_before_embedding
@@ -166,6 +167,11 @@ class _PipelineMixin:
         track_id: str | None = None,
         multimodal_items: list[list[dict[str, Any]]] | None = None,
         ontology: str | None = None,
+        entity_registry: str | None = None,
+        entity_resolution: bool = True,
+        entity_resolution_llm: bool = True,
+        orphan_repair: bool = True,
+        prune_isolated: bool = True,
         page_offsets: list[list[dict[str, int]]] | None = None,
         save_parent: bool = True,
     ) -> str:
@@ -188,6 +194,19 @@ class _PipelineMixin:
             track_id: tracking ID for monitoring processing status
             ontology: ontology file the documents are extracted under; stored as
                 doc_status metadata ``kg_ontology``
+            entity_registry: entity registry the documents' entities are merged
+                under; stored as doc_status metadata ``kg_entity_registry``
+            entity_resolution: whether the documents' entity names are resolved
+                before the graph merge; stored as doc_status metadata
+                ``entity_resolution``
+            entity_resolution_llm: whether an LLM also judges the pairs rules cannot
+                decide; stored as doc_status metadata ``entity_resolution_llm``
+            orphan_repair: whether chunks with unlinked entities get a
+                relationship-only repair call; stored as doc_status metadata
+                ``orphan_repair``
+            prune_isolated: whether the documents' entities still unlinked after
+                the batch are deleted; stored as doc_status metadata
+                ``prune_isolated``
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -196,6 +215,8 @@ class _PipelineMixin:
         # otherwise only surface mid-pipeline, after the document was enqueued.
         if ontology:
             load_ontology_schema(ontology)
+        if entity_registry:
+            load_entity_registry(entity_registry)
         # Generate track_id if not provided
         if track_id is None or track_id.strip() == "":
             track_id = generate_track_id("enqueue")
@@ -358,10 +379,16 @@ class _PipelineMixin:
             # so a per-document value has to survive a write and a read.
             if ontology:
                 metadata["kg_ontology"] = ontology
+            if entity_registry:
+                metadata["kg_entity_registry"] = entity_registry
             # Ditulis tanpa penjagaan falsy, beda dari ``ontology``: ``False`` harus
             # ikut tersimpan, bukan menghilang jadi "tidak diset" — pembacanya
             # memakai default ``True``.
             metadata["save_parent"] = bool(save_parent)
+            metadata["entity_resolution"] = bool(entity_resolution)
+            metadata["entity_resolution_llm"] = bool(entity_resolution_llm)
+            metadata["orphan_repair"] = bool(orphan_repair)
+            metadata["prune_isolated"] = bool(prune_isolated)
             if metadata:
                 base["metadata"] = metadata
             return base
@@ -760,6 +787,17 @@ class _PipelineMixin:
             )
         if internal_abort:
             await self._discard_pending_index_ops()
+            return
+        # Workers are stopped, so no merge can be adding an edge to a node this
+        # deletes; see _prune_isolated_entities. Only the documents ingested with
+        # ``prune_isolated`` take part.
+        prune_doc_ids = [
+            doc_id
+            for doc_id, status_doc in to_process_docs.items()
+            if (getattr(status_doc, "metadata", None) or {}).get("prune_isolated", True)
+        ]
+        if prune_doc_ids:
+            await self._prune_isolated_entities(prune_doc_ids)
 
     async def _validate_and_fix_document_consistency(
         self,
@@ -1302,12 +1340,17 @@ class _PipelineMixin:
                     # Merge the nodes/edges extracted from the parent chunks
                     # into the graph (source_ids already redirected to children).
                     progress.stage("merge")
+                    doc_metadata = getattr(status_doc, "metadata", None) or {}
                     await merge_nodes_and_edges(
                         chunk_results=chunk_results,
                         knowledge_graph_inst=self.chunk_entity_relation_graph,
                         entity_vdb=self.entities_vdb,
                         relationships_vdb=self.relationships_vdb,
-                        global_config=self._build_global_config(),
+                        global_config={
+                            **self._build_global_config(),
+                            "kg_entity_registry": doc_metadata.get("kg_entity_registry"),
+                            "entity_resolution_llm": doc_metadata.get("entity_resolution_llm", True),
+                        },
                         full_entities_storage=self.full_entities,
                         full_relations_storage=self.full_relations,
                         doc_id=doc_id,
@@ -1319,6 +1362,11 @@ class _PipelineMixin:
                         current_file_number=current_file_number,
                         total_files=ctx.total_files,
                         file_path=file_path,
+                        entity_resolver=(
+                            self.entity_resolver
+                            if doc_metadata.get("entity_resolution", True)
+                            else None
+                        ),
                     )
                     run.mark("merge")
 
@@ -1466,9 +1514,8 @@ class _PipelineMixin:
         # ikut disimpan ke ``text_chunks`` sebagai bukti utuh yang bisa
         # dikembalikan retrieval (``QueryParam.return_parent``). Tidak pernah
         # masuk ``chunks_vdb``: parent tidak di-embed dan tidak pernah dicari.
-        save_parent = (getattr(status_doc, "metadata", None) or {}).get(
-            "save_parent", True
-        )
+        doc_metadata = getattr(status_doc, "metadata", None) or {}
+        save_parent = doc_metadata.get("save_parent", True)
         for _p in parent_result:
             _idx = _p["chunk_order_index"]
             _p["chunk_id"] = f"parent-{_idx:03d}"
@@ -1491,7 +1538,8 @@ class _PipelineMixin:
                 _parent_chunks_dict,
                 ctx.pipeline_status,
                 ctx.pipeline_status_lock,
-                ontology=(getattr(status_doc, "metadata", None) or {}).get("kg_ontology"),
+                ontology=doc_metadata.get("kg_ontology"),
+                orphan_repair=doc_metadata.get("orphan_repair", True),
                 semaphore=extract_gate,
             )
         )

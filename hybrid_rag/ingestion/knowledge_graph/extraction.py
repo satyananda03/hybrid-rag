@@ -10,6 +10,7 @@ from hybrid_rag.core.exceptions import (
 )
 from hybrid_rag.core.source_ids import apply_source_ids_limit, merge_source_ids
 from hybrid_rag.ingestion.utils import (
+    INVALID_OUTPUT_ERRORS,
     create_prefixed_exception,
     pack_user_ass_to_openai_messages,
     update_chunk_cache_list,
@@ -54,7 +55,6 @@ from hybrid_rag.ingestion.knowledge_graph.ontology_schema import (
     load_ontology_schema,
     prune_chunk,
 )
-from langchain_core.exceptions import OutputParserException
 from langchain_core.runnables import Runnable
 from pydantic import ValidationError
 from hybrid_rag.core.llm_cache import (
@@ -73,6 +73,15 @@ from hybrid_rag.core.constants import (
 )
 from hybrid_rag.storage.shared import get_storage_keyed_lock
 from hybrid_rag.ingestion.knowledge_graph.merge_session import MergeSession
+from hybrid_rag.ingestion.knowledge_graph.entity_repairment import (
+    accept_repair,
+    repair_inputs,
+    unlinked_names,
+)
+from hybrid_rag.ingestion.knowledge_graph.entity_resolution import (
+    EntityResolver,
+    rewrite as rewrite_entity_names,
+)
 from hybrid_rag.core.chunk_schema import _truncate_section_context
 import time
 from hybrid_rag.config import settings
@@ -424,15 +433,21 @@ async def _summarize_descriptions(
 _DASHES = str.maketrans({c: "-" for c in "‐‑‒–—―−﹘﹣－"})
 
 
+def _title_keep_acronyms(text: str) -> str:
+    """Title-case each word but leave all-caps words of 2+ letters alone (ICCN, UU, UMKM)."""
+    return re.sub(r"[^\W\d_]+", lambda m: m[0] if len(m[0]) > 1 and m[0].isupper() else m[0].capitalize(), text)
+
+
 def _clean_identifier(raw: str) -> str:
     """Normalize an entity name the way the KG stores it: sanitized, dashes folded,
-    title case.
+    title case with acronyms kept in ALL CAPS (the extraction prompt asks for that).
 
     Entity names and both relationship endpoints all pass through here, so a node
     key and the edges pointing at it cannot drift apart. Canonical naming (e.g.
     "Pasal 10") is the extraction prompt's job: see the ontology's class comments.
     """
-    return sanitize_and_normalize_extracted_text(raw, remove_inner_quotes=True).translate(_DASHES).title()
+    name = sanitize_and_normalize_extracted_text(raw, remove_inner_quotes=True).translate(_DASHES)
+    return _title_keep_acronyms(name)
 
 
 def _parse_properties(properties: list[ExtractedProperty]) -> dict[str, str]:
@@ -454,7 +469,7 @@ _RESERVED_GRAPH_KEYS = frozenset(
     {
         "entity_id", "entity_type", "description", "source_id", "file_path",
         "created_at", "truncate", "workspace", "weight", "keywords",
-        "relation_type", "relation_triples",
+        "relation_type", "relation_triples", "aliases",
     }
 )
 
@@ -497,11 +512,6 @@ def _relation_typing(edges: list[dict], existing: dict | None) -> dict:
     return {"relation_type": ",".join(sorted(types)), "relation_triples": sorted(triples)}
 
 
-# Model output that breaks the extraction contract as a whole (invalid JSON, no
-# ``entities`` array). A single broken record never gets here: the schema drops it.
-INVALID_OUTPUT_ERRORS = (ValidationError, OutputParserException)
-
-
 async def _extract_or_none(
     chain: Runnable,
     inputs: dict[str, Any],
@@ -517,7 +527,9 @@ async def _extract_or_none(
     search; only its graph contribution is missing. A failed reply is never
     cached, so the retry really asks the model again.
 
-    Only invalid *output* is caught. Infrastructure errors (timeouts, 5xx, auth)
+    Only invalid *output* is caught — the contract broken as a whole (invalid
+    JSON, no ``entities`` array); a single broken record never gets here, the
+    schema drops it. Infrastructure errors (timeouts, 5xx, auth)
     still fail the document: skipping those would let a dead provider "succeed"
     with an empty graph.
     """
@@ -650,6 +662,30 @@ def _parse_extraction_output(
     return dict(maybe_nodes), dict(maybe_edges)
 
 
+async def _units_ingested_without_resolution(
+    unit_ids: list[str],
+    text_chunks_storage: BaseKVStorage,
+    doc_status_storage: BaseKVStorage | None,
+) -> set[str]:
+    """Extraction units whose document was ingested with ``entity_resolution=False``."""
+    if doc_status_storage is None or not unit_ids:
+        return set()
+    units = await text_chunks_storage.get_by_ids(unit_ids)
+    doc_of = {
+        unit_id: row["full_doc_id"]
+        for unit_id, row in zip(unit_ids, units)
+        if isinstance(row, dict) and row.get("full_doc_id")
+    }
+    doc_ids = list(dict.fromkeys(doc_of.values()))
+    rows = await doc_status_storage.get_by_ids(doc_ids)
+    off = {
+        doc_id
+        for doc_id, row in zip(doc_ids, rows)
+        if ((row or {}).get("metadata") or {}).get("entity_resolution", True) is False
+    }
+    return {unit_id for unit_id, doc_id in doc_of.items() if doc_id in off}
+
+
 async def rebuild_knowledge_from_chunks(
     entities_to_rebuild: dict[str, list[str]],
     relationships_to_rebuild: dict[tuple[str, str], list[str]],
@@ -662,6 +698,7 @@ async def rebuild_knowledge_from_chunks(
     entity_chunks_storage: BaseKVStorage | None = None,
     relation_chunks_storage: BaseKVStorage | None = None,
     doc_status_storage: BaseKVStorage | None = None,
+    entity_resolver: EntityResolver | None = None,
 ) -> None:
     """Rebuild entity and relationship descriptions from cached extraction results with parallel processing
 
@@ -685,6 +722,8 @@ async def rebuild_knowledge_from_chunks(
         doc_status_storage: Document status storage; a chunk whose document was
             ingested under an ontology (``metadata.kg_ontology``) is re-pruned
             against it, so the rebuild reproduces what extraction kept
+        entity_resolver: Maps the re-parsed raw names onto the canonical names
+            ingest wrote (registry lookup only), so they match ``entities_to_rebuild``
     """
     if not entities_to_rebuild and not relationships_to_rebuild:
         return
@@ -802,6 +841,20 @@ async def rebuild_knowledge_from_chunks(
             )
             logger.info(status_message)  # Per requirement, change to info
             continue
+
+    # The cache holds raw names; ingest wrote canonical ones. Without this the
+    # lookups below miss and a deletion brings the alias names back. A document
+    # ingested with entity_resolution=False wrote its raw names, so it keeps them.
+    if entity_resolver is not None:
+        unresolved = await _units_ingested_without_resolution(
+            list(chunk_entities), text_chunks_storage, doc_status_storage
+        )
+        resolved = [c for c in chunk_entities if c not in unresolved]
+        mapping = await entity_resolver.canonical_names(chunk_entities[c] for c in resolved)
+        for chunk_id in resolved:
+            chunk_entities[chunk_id], chunk_relationships[chunk_id] = rewrite_entity_names(
+                chunk_entities[chunk_id], chunk_relationships[chunk_id], mapping
+            )
 
     # Get max async tasks limit from global_config for semaphore control
     graph_max_async = global_config.get("llm_model_max_async", 4) * 2
@@ -1176,12 +1229,21 @@ async def _rebuild_single_entity(
                 "created_at": int(time.time()),
                 "truncate": truncation_info,
             }
+            # Aliases follow the remaining records: a deleted document's alias goes
+            # with it. Rebuilt from relationships only (no records): keep them.
+            aliases = (
+                EntityResolver.merged_aliases(entity_name, None, all_entity_data)
+                if all_entity_data
+                else current_entity.get("aliases", "")
+            )
+            if aliases or current_entity.get("aliases"):
+                updated_entity_data["aliases"] = aliases
             await knowledge_graph_inst.upsert_node(entity_name, updated_entity_data)
 
             # Update entity in vector database (equally critical)
             entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
             entity_content = _truncate_vdb_content(
-                f"{entity_name}\n{final_description}",
+                EntityResolver.vdb_content(entity_name, final_description, aliases),
                 global_config,
                 f"entity:{entity_name}",
             )
@@ -1935,6 +1997,12 @@ async def _merge_nodes_then_upsert(
         truncate=truncation_info,
         **_ontology_properties(nodes_data, already_node),
     )
+    # Names entity resolution merged into this node (ICCN for Indonesia Creative Cities Network)
+    aliases = EntityResolver.merged_aliases(
+        entity_name, (already_node or {}).get("aliases"), nodes_data
+    )
+    if aliases:
+        node_data["aliases"] = aliases
     await knowledge_graph_inst.upsert_node(
         entity_name,
         node_data=node_data,
@@ -1943,7 +2011,7 @@ async def _merge_nodes_then_upsert(
     if entity_vdb is not None:
         entity_vdb_id = compute_mdhash_id(str(entity_name), prefix="ent-")
         entity_content = _truncate_vdb_content(
-            f"{entity_name}\n{description}",
+            EntityResolver.vdb_content(entity_name, description, aliases),
             global_config,
             f"entity:{entity_name}",
         )
@@ -2418,8 +2486,10 @@ async def _merge_edges_then_upsert(
                 # Update vector database
                 if entity_vdb is not None:
                     entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
-                    entity_content = (
-                        f"{need_insert_id}\n{existing_node.get('description', '')}"
+                    entity_content = EntityResolver.vdb_content(
+                        need_insert_id,
+                        existing_node.get("description", ""),
+                        existing_node.get("aliases"),
                     )
                     vdb_data = {
                         entity_vdb_id: {
@@ -2614,6 +2684,7 @@ async def merge_nodes_and_edges(
     total_files: int = 0,
     file_path: str = "unknown_source",
     _batched: bool = True,
+    entity_resolver: EntityResolver | None = None,
 ) -> None:
     """Two-phase merge: process all entities first, then all relationships
 
@@ -2642,6 +2713,11 @@ async def merge_nodes_and_edges(
         _batched: Read the graph once, merge in memory, write once (see
             ``merge_session``). ``False`` runs the per-item path; kept for the
             equivalence test only.
+        entity_resolver: Rewrites name variants to their canonical name before
+            anything is read or written (see ``entity_resolution``); the
+            per-document YAML registry comes from ``global_config["kg_entity_registry"]``
+            and the LLM stage (Fase 2) from ``global_config["entity_resolution_llm"]``.
+            None keeps the exact-name merge.
     """
 
     # Check for cancellation at the start of merge
@@ -2664,6 +2740,15 @@ async def merge_nodes_and_edges(
             sorted_edge_key = tuple(sorted(edge_key))
             all_edges[sorted_edge_key].extend(edges)
         await _cooperative_yield(i, every=32)
+
+    # Before _merge_storages, so its locks and prefetch already use canonical names.
+    if entity_resolver is not None:
+        all_nodes, all_edges = await entity_resolver.resolve(
+            all_nodes,
+            all_edges,
+            global_config.get("kg_entity_registry"),
+            use_llm=global_config.get("entity_resolution_llm", False),
+        )
 
     total_entities_count = len(all_nodes)
     total_relations_count = len(all_edges)
@@ -3038,10 +3123,6 @@ async def extract_entities(
     # One document's chunks all share an ontology, so it is resolved once per
     # call rather than per chunk. ``None`` selects the default contract.
     chains = get_kg_chains(global_config.get("kg_ontology"))
-    context_base = dict(
-        max_total_records=global_config["entity_extract_max_records"],
-        max_entity_records=global_config["entity_extract_max_entities"],
-    )
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
 
@@ -3071,7 +3152,6 @@ async def extract_entities(
         )
 
         chain_inputs = {
-            **context_base,
             "input_text": sanitize_text_for_encoding(content),
             "heading_context_block": heading_context_block,
         }
@@ -3189,6 +3269,28 @@ async def extract_entities(
                     # New edge from gleaning stage
                     maybe_edges[edge_key] = list(glean_edge_list)
                 await _cooperative_yield(i, every=8)
+
+        # Entities still unlinked get one relationship-only call. Fires only for
+        # chunks that need it, so it costs far less than another gleaning pass.
+        if global_config.get("orphan_repair", True):
+            orphans = unlinked_names(maybe_nodes, maybe_edges)
+            if orphans:
+                repair_pass = await _extract_or_none(
+                    chains.repair_chain,
+                    repair_inputs(chain_inputs, maybe_nodes, orphans),
+                    cache_config,
+                    chunk_key,
+                    "orphan repair",
+                )
+                _, repair_edges = _parse_extraction_output(
+                    repair_pass, chunk_key, int(time.time()), file_path
+                )
+                new_edges = accept_repair(maybe_nodes, maybe_edges, set(orphans), repair_edges)
+                maybe_edges.update(new_edges)
+                logger.debug(
+                    f"{chunk_key}: orphan repair linked {len(new_edges)} edges "
+                    f"for {len(orphans)} unlinked entities"
+                )
 
         # Under an ontology, validate the chunk's combined first pass + gleaning the
         # way neo4j-graphrag's GraphPruning validates its extracted graph. The

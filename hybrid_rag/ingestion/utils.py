@@ -7,10 +7,17 @@ import uuid
 from datetime import datetime
 from typing import Callable, NoReturn, Optional, TYPE_CHECKING
 
+from langchain_core.exceptions import OutputParserException
+from pydantic import ValidationError
+
 if TYPE_CHECKING:
     from hybrid_rag.core.base import BaseKVStorage
 
 logger = logging.getLogger(__name__)
+
+# A model reply that breaks its output schema as a whole (invalid JSON, a missing
+# or mistyped field). Asking again can succeed; infrastructure errors are not in here.
+INVALID_OUTPUT_ERRORS = (ValidationError, OutputParserException)
 
 
 def pack_user_ass_to_openai_messages(*args: str):

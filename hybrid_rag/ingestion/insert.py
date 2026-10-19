@@ -64,6 +64,11 @@ class _IngestionMixin:
         ids: str | list[str] | None = None,
         multimodal_items: List[Dict[str, Any]] | None = None,
         ontology: str | None = None,
+        entity_registry: str | None = None,
+        entity_resolution: bool = True,
+        entity_resolution_llm: bool = True,
+        orphan_repair: bool = True,
+        prune_isolated: bool = True,
         page_offsets: List[Dict[str, int]] | None = None,
         save_parent: bool = True,
     ) -> None:
@@ -79,6 +84,11 @@ class _IngestionMixin:
             file_paths=file_paths,
             multimodal_items=[list(multimodal_items or [])],
             ontology=ontology,
+            entity_registry=entity_registry,
+            entity_resolution=entity_resolution,
+            entity_resolution_llm=entity_resolution_llm,
+            orphan_repair=orphan_repair,
+            prune_isolated=prune_isolated,
             page_offsets=[list(page_offsets or [])],
             save_parent=save_parent,
         )
@@ -91,6 +101,11 @@ class _IngestionMixin:
         file_path: str = "unknown_document",
         doc_id: str | None = None,
         ontology: str | None = None,
+        entity_registry: str | None = None,
+        entity_resolution: bool = True,
+        entity_resolution_llm: bool = True,
+        orphan_repair: bool = True,
+        prune_isolated: bool = True,
         save_parent: bool = True,
     ):
         """
@@ -116,6 +131,29 @@ class _IngestionMixin:
                     contract with no validation. Several ontologies may share a
                     workspace, so this is a property of the document; an unknown
                     or unparsable file raises here.
+            entity_registry: File name (with or without ``.yaml``) of an entity
+                    registry in ``knowledge_graph/entity_registry/``: curated
+                    aliases and never_merge pairs applied when this document's
+                    entities are merged (see knowledge_graph.entity_resolution).
+                    None applies only the deterministic rules; an unknown file
+                    raises here.
+            entity_resolution: Merge this document's entity name variants into
+                    canonical names before writing the graph (see
+                    knowledge_graph.entity_resolution). False keeps the plain
+                    exact-name merge for this document; entity_registry is then
+                    ignored.
+            entity_resolution_llm: Also let an LLM judge the name pairs the rules
+                    cannot decide (qualifiers, typos, acronyms), comparing with
+                    this workspace's existing entities. Only applies when
+                    entity_resolution is True; a failing LLM call keeps the
+                    rule-only result.
+            orphan_repair: For each chunk whose extraction left entities with no
+                    relationship, ask the LLM once more for the relationships the
+                    text states about them (see knowledge_graph.entity_repairment).
+                    Costs one extra call for those chunks only.
+            prune_isolated: Once the batch is merged, delete this document's
+                    entities that still have no relationship (multimodal anchors
+                    excepted); their text stays searchable from the chunks.
             save_parent: Also store the parent chunks next to the embedded
                     children, so retrieval can return the full passage
                     (``return_parent``). Parents are never embedded; turn this
@@ -174,6 +212,9 @@ class _IngestionMixin:
             ids=doc_id,
             multimodal_items=multimodal_items,
             ontology=ontology,
+            entity_registry=entity_registry,
+            entity_resolution=entity_resolution,
+            entity_resolution_llm=entity_resolution_llm,
             page_offsets=page_offsets,
             save_parent=save_parent,
         )

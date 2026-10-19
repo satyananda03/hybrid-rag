@@ -1,0 +1,402 @@
+"""
+Pipeline orchestrator for coordinating stage execution.
+
+This module provides the main orchestrator that coordinates the execution
+of pipeline stages, handles errors, and manages resource cleanup.
+"""
+
+import gc
+import time
+from pathlib import Path
+from typing import Any, Dict, Literal, Union
+
+from .. import __version__
+from ..core import PipelineConfig
+from ..exceptions import PipelineError
+from ..logging_utils import ensure_logging, get_component_logger
+from .context import PipelineContext
+from .stages import (
+    DoclingExportStage,
+    ExportStage,
+    ExtractionStage,
+    GraphConversionStage,
+    InputNormalizationStage,
+    PipelineStage,
+    TemplateLoadingStage,
+    VisualizationStage,
+)
+from .trace import EventTrace
+
+logger = get_component_logger("Pipeline", __name__)
+
+
+class PipelineOrchestrator:
+    """
+    Orchestrates pipeline execution through stages.
+
+    The orchestrator manages the execution flow, passing context between
+    stages, handling errors, and ensuring proper resource cleanup.
+    """
+
+    def __init__(self, config: PipelineConfig, mode: Literal["cli", "api"] = "api") -> None:
+        """
+        Initialize orchestrator with configuration.
+
+        Args:
+            config: Pipeline configuration
+            mode: Execution mode - "cli" or "api"
+        """
+        self.config = config
+        self.mode = mode
+
+        # Auto-detect dump_to_disk based on mode if not explicitly set
+        if config.dump_to_disk is None:
+            # CLI mode: dump by default
+            # API mode: don't dump by default
+            self.dump_to_disk = mode == "cli"
+        else:
+            # User explicitly set dump_to_disk
+            self.dump_to_disk = config.dump_to_disk
+
+        # Core stages (always executed)
+        self.stages: list[PipelineStage] = [
+            InputNormalizationStage(mode=mode),
+            TemplateLoadingStage(),
+            ExtractionStage(),
+            GraphConversionStage(),
+        ]
+
+        # Export stages (conditional based on dump_to_disk)
+        if self.dump_to_disk:
+            self.stages.extend(
+                [
+                    DoclingExportStage(),
+                    ExportStage(),
+                    VisualizationStage(),
+                ]
+            )
+
+    def run(self) -> PipelineContext:
+        """
+        Execute all pipeline stages.
+
+        Returns:
+            Final pipeline context with all results
+
+        Raises:
+            PipelineError: If any stage fails
+        """
+        # Start timing the entire pipeline
+        pipeline_start_time = time.time()
+
+        context = PipelineContext(config=self.config)
+        current_stage = None
+
+        # Initialize in-memory trace when debug is enabled (CLI --debug or PipelineConfig(debug=True))
+        if self.config.debug:
+            context.trace_data = EventTrace()
+            context.trace_data.emit(
+                "pipeline_started",
+                "pipeline",
+                {
+                    "mode": self.mode,
+                    "source": str(self.config.source),
+                    "processing_mode": self.config.processing_mode,
+                    "backend": self.config.backend,
+                    "inference": self.config.inference,
+                    "debug": self.config.debug,
+                },
+            )
+
+        # Initialize OutputDirectoryManager if dumping to disk
+        if self.dump_to_disk:
+            from ..core.utils.output_manager import OutputDirectoryManager
+
+            source_filename = Path(self.config.source).name if self.config.source else "output"
+            context.output_manager = OutputDirectoryManager(
+                base_output_dir=Path(self.config.output_dir), source_filename=source_filename
+            )
+            logger.info(f"Output directory: {context.output_manager.get_document_dir()}")
+
+        logger.info("Starting Docling-Graph Pipeline")
+
+        try:
+            for stage in self.stages:
+                current_stage = stage
+                context = stage.execute(context)
+
+            # Calculate total processing time
+            pipeline_end_time = time.time()
+            pipeline_processing_time = pipeline_end_time - pipeline_start_time
+
+            # Save metadata.json if output_manager is available
+            if context.output_manager and self.dump_to_disk:
+                from datetime import datetime
+
+                # Determine actual model and provider used
+                actual_model = self.config.model_override
+                actual_provider = self.config.provider_override
+
+                # If no overrides, get from models config based on backend and inference
+                if not actual_model or not actual_provider:
+                    if self.config.backend == "llm":
+                        if self.config.inference == "local":
+                            actual_model = actual_model or self.config.models.llm.local.model
+                            actual_provider = (
+                                actual_provider or self.config.models.llm.local.provider
+                            )
+                        else:  # remote
+                            actual_model = actual_model or self.config.models.llm.remote.model
+                            actual_provider = (
+                                actual_provider or self.config.models.llm.remote.provider
+                            )
+                    else:  # vlm
+                        actual_model = actual_model or self.config.models.vlm.local.model
+                        actual_provider = actual_provider or self.config.models.vlm.local.provider
+
+                # Full effective config (all options including defaults) for reproducibility
+                full_config = self.config.to_metadata_config_dict(
+                    resolved_model=actual_model,
+                    resolved_provider=actual_provider,
+                )
+
+                results: Dict[str, Any] = {
+                    "nodes": context.graph_metadata.node_count if context.graph_metadata else 0,
+                    "edges": context.graph_metadata.edge_count if context.graph_metadata else 0,
+                    "extracted_models": len(context.extracted_models)
+                    if context.extracted_models
+                    else 0,
+                }
+                # Dense extraction observability: skeleton size, truncation and
+                # split counts, orphan-rescue stats, retention — so quality
+                # regressions are visible per run without debug artifacts.
+                extraction_backend = getattr(context.extractor, "backend", None)
+                dense_stats = getattr(extraction_backend, "last_dense_stats", None)
+                if isinstance(dense_stats, dict) and dense_stats:
+                    results["dense"] = dense_stats
+
+                metadata = {
+                    "pipeline_version": __version__,
+                    "timestamp": datetime.now().isoformat(),
+                    "input": {
+                        "source": str(self.config.source),
+                        "template": str(self.config.template),
+                    },
+                    "config": full_config,
+                    "processing_time_seconds": round(pipeline_processing_time, 2),
+                    "results": results,
+                }
+
+                context.output_manager.save_metadata(metadata)
+                logger.info(
+                    f"Saved metadata to {context.output_manager.get_document_dir() / 'metadata.json'}"
+                )
+
+            if context.trace_data is not None:
+                context.trace_data.emit(
+                    "pipeline_finished",
+                    "pipeline",
+                    {
+                        "processing_time_seconds": round(pipeline_processing_time, 2),
+                        "nodes": context.graph_metadata.node_count if context.graph_metadata else 0,
+                        "edges": context.graph_metadata.edge_count if context.graph_metadata else 0,
+                        "extracted_models": len(context.extracted_models)
+                        if context.extracted_models
+                        else 0,
+                    },
+                )
+
+            # Export trace data to debug dir when debug is on and we're writing to disk
+            if context.trace_data and context.output_manager and self.dump_to_disk:
+                import json
+
+                from .trace import event_trace_to_jsonable
+
+                debug_dir = context.output_manager.get_debug_dir()
+                trace_path = debug_dir / "trace_data.json"
+                with open(trace_path, "w", encoding="utf-8") as f:
+                    json.dump(
+                        event_trace_to_jsonable(context.trace_data),
+                        f,
+                        indent=2,
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                logger.info(f"Saved trace data to {trace_path}")
+
+            # Log final output directory after all exports complete
+            if context.output_manager and self.dump_to_disk:
+                output_dir = context.output_manager.get_document_dir()
+                logger.info(f"Saved conversion results to {output_dir}")
+
+            logger.info(f"Pipeline Completed Successfully (in {pipeline_processing_time:.2f}s)")
+            return context
+
+        except Exception as e:
+            stage_name = current_stage.name() if current_stage else "Unknown"
+            logger.error(f"Pipeline failed at stage: {stage_name}")
+            if context.trace_data is not None:
+                context.trace_data.emit(
+                    "pipeline_failed",
+                    "pipeline",
+                    {
+                        "stage": stage_name,
+                        "error_type": type(e).__name__,
+                        "error": str(e),
+                    },
+                )
+
+            # Cleanup empty output directory if dump_to_disk was enabled
+            if self.dump_to_disk and context.output_manager:
+                try:
+                    if context.output_manager.cleanup_if_empty():
+                        logger.info(
+                            f"Removed empty output directory: {context.output_manager.get_document_dir()}"
+                        )
+                    else:
+                        logger.info(
+                            f"Kept output directory with partial results: {context.output_manager.get_document_dir()}"
+                        )
+                except Exception as cleanup_error:
+                    # Don't let cleanup errors mask the original error
+                    logger.warning(f"Failed to cleanup output directory: {cleanup_error}")
+
+            if isinstance(e, PipelineError):
+                raise
+
+            details = {"stage": stage_name, "error": str(e), "error_type": type(e).__name__}
+            # Propagate a stable machine-readable ``reason`` from the wrapped
+            # DoclingGraphError so callers can classify the failure without
+            # parsing the English message (e.g. 'no_models_extracted').
+            cause_details = getattr(e, "details", None)
+            if isinstance(cause_details, dict) and "reason" in cause_details:
+                details["reason"] = cause_details["reason"]
+
+            raise PipelineError(
+                f"Pipeline failed at stage '{stage_name}': {type(e).__name__}",
+                details=details,
+                cause=e,
+            ) from e
+
+        finally:
+            self._cleanup(context)
+
+    def _cleanup(self, context: PipelineContext) -> None:
+        """
+        Clean up resources after pipeline execution.
+
+        Args:
+            context: Pipeline context with resources to clean
+        """
+        logger.info("Cleaning up resources...")
+
+        # A full gc.collect() after every run is a stop-the-world pause that
+        # hurts tail latency for long-lived services running many small jobs.
+        # It stays on by default (CLI / batch); a service can set
+        # PipelineConfig(gc_collect=False) to skip it — the flag is threaded
+        # into the backend/doc-processor cleanups too, which run their own
+        # collects. The CUDA cache purge is kept regardless — it is GPU-memory
+        # hygiene, not a latency cost.
+        collect = bool(getattr(self.config, "gc_collect", True))
+
+        if context.extractor:
+            if hasattr(context.extractor, "backend"):
+                backend = context.extractor.backend
+                if hasattr(backend, "cleanup"):
+                    _call_cleanup(backend.cleanup, collect)
+
+            if hasattr(context.extractor, "doc_processor"):
+                doc_processor = context.extractor.doc_processor
+                if hasattr(doc_processor, "cleanup"):
+                    _call_cleanup(doc_processor.cleanup, collect)
+
+        if collect:
+            gc.collect()
+
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
+
+def _call_cleanup(cleanup_fn: Any, collect: bool) -> None:
+    """Invoke a backend/doc-processor ``cleanup``, forwarding the gc gate.
+
+    In-repo cleanups take ``collect``; a custom backend whose ``cleanup()``
+    predates the flag is still called (it just keeps its own gc behavior).
+    """
+    import inspect
+
+    try:
+        accepts_collect = "collect" in inspect.signature(cleanup_fn).parameters
+    except (TypeError, ValueError):  # builtins/mocks without introspectable signatures
+        accepts_collect = False
+    if accepts_collect:
+        cleanup_fn(collect=collect)
+    else:
+        cleanup_fn()
+
+
+def run_pipeline(
+    config: Union[PipelineConfig, Dict[str, Any]], mode: Literal["cli", "api"] = "api"
+) -> PipelineContext:
+    """
+    Run the extraction and graph conversion pipeline.
+
+    This is the main entry point for pipeline execution. It accepts either
+    a PipelineConfig object or a dictionary of configuration parameters.
+
+    Args:
+        config: Pipeline configuration as PipelineConfig or dict
+        mode: Execution mode - "cli" for CLI invocations, "api" for Python API (default: "api")
+
+    Returns:
+        PipelineContext containing:
+            - knowledge_graph: NetworkX DiGraph with extracted entities and relationships
+            - extracted_models: List of Pydantic models from extraction
+            - graph_metadata: Statistics about the generated graph
+            - docling_document: Original DoclingDocument (if available)
+
+    Raises:
+        PipelineError: If pipeline execution fails
+
+    Note:
+        File exports are controlled by the dump_to_disk parameter:
+        - None (default): CLI mode exports files, API mode doesn't
+        - True: Force file exports regardless of mode
+        - False: Disable file exports regardless of mode
+
+    Example (API mode - no exports):
+        >>> from docling_graph import run_pipeline
+        >>> config = {
+        ...     "source": "document.pdf",
+        ...     "template": "my_templates.MyTemplate",
+        ...     "backend": "llm",
+        ...     "inference": "remote"
+        ... }
+        >>> context = run_pipeline(config)
+        >>> graph = context.knowledge_graph
+        >>> models = context.extracted_models
+
+    Example (API mode - with exports):
+        >>> config = {
+        ...     "source": "document.pdf",
+        ...     "template": "my_templates.MyTemplate",
+        ...     "dump_to_disk": True,
+        ...     "output_dir": "my_exports"
+        ... }
+        >>> context = run_pipeline(config)
+
+    Example (CLI mode):
+        >>> # Called internally by CLI
+        >>> run_pipeline(config, mode="cli")
+    """
+    ensure_logging()
+    if isinstance(config, dict):
+        config = PipelineConfig(**config)
+
+    orchestrator = PipelineOrchestrator(config, mode=mode)
+    return orchestrator.run()

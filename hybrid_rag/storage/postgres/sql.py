@@ -211,6 +211,42 @@ TABLES = {
                     CONSTRAINT hybrid_rag_relation_chunks_pk PRIMARY KEY (workspace, id)
                     )"""
     },
+    # LLM verdicts on entity pairs, so a consolidation run never asks twice
+    # (knowledge_graph/entity_adjudication.py). id = sha1 of the sorted pair.
+    "hybrid_rag_entity_pair_verdict": {
+        "ddl": """CREATE TABLE hybrid_rag_entity_pair_verdict (
+                    id VARCHAR(64),
+                    workspace VARCHAR(255),
+                    name_a VARCHAR(512),
+                    name_b VARCHAR(512),
+                    same BOOLEAN NOT NULL,
+                    confidence REAL,
+                    preferred VARCHAR(512),
+                    reason TEXT,
+                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT hybrid_rag_entity_pair_verdict_pk PRIMARY KEY (workspace, id)
+                    )"""
+    },
+    # Entity resolution decisions (knowledge_graph/entity_resolution.py).
+    # id = "<entity type>:<match_key>"; decision/confidence are for the LLM stage.
+    "hybrid_rag_entity_alias": {
+        "ddl": """CREATE TABLE hybrid_rag_entity_alias (
+                    id VARCHAR(512),
+                    workspace VARCHAR(255),
+                    alias_key VARCHAR(512),
+                    alias_name VARCHAR(512),
+                    entity_type VARCHAR(255),
+                    canonical_entity_id VARCHAR(512) NOT NULL,
+                    source VARCHAR(32) NOT NULL,
+                    decision VARCHAR(32) NOT NULL DEFAULT 'same',
+                    confidence REAL,
+                    evidence TEXT,
+                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT hybrid_rag_entity_alias_pk PRIMARY KEY (workspace, id)
+                    )"""
+    },
 }
 
 
@@ -409,6 +445,42 @@ SQL_TEMPLATES = {
                       count=EXCLUDED.count,
                       update_time = EXCLUDED.update_time
                      """,
+    "get_entity_aliases": """SELECT id, canonical_entity_id FROM hybrid_rag_entity_alias
+                      WHERE workspace=$1 AND id = ANY($2) AND decision = 'same'
+                     """,
+    # A rule/llm decision never replaces an earlier one; a user (YAML) decision does.
+    "upsert_entity_alias": """INSERT INTO hybrid_rag_entity_alias (workspace, id, alias_key, alias_name,
+                      entity_type, canonical_entity_id, source, evidence, confidence)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                      ON CONFLICT (workspace,id) DO UPDATE
+                      SET canonical_entity_id=EXCLUDED.canonical_entity_id,
+                      alias_name=EXCLUDED.alias_name,
+                      source=EXCLUDED.source,
+                      evidence=EXCLUDED.evidence,
+                      confidence=EXCLUDED.confidence,
+                      update_time=CURRENT_TIMESTAMP
+                      WHERE EXCLUDED.source = 'user'
+                     """,
+    # Consolidation folded one entity into another: every alias follows it.
+    "repoint_entity_alias": """UPDATE hybrid_rag_entity_alias
+                      SET canonical_entity_id=$3, update_time=CURRENT_TIMESTAMP
+                      WHERE workspace=$1 AND canonical_entity_id=$2
+                     """,
+    "get_pair_verdicts": """SELECT id, same, confidence, preferred, reason FROM hybrid_rag_entity_pair_verdict
+                      WHERE workspace=$1 AND id = ANY($2)
+                     """,
+    "upsert_pair_verdict": """INSERT INTO hybrid_rag_entity_pair_verdict (workspace, id, name_a, name_b,
+                      same, confidence, preferred, reason)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                      ON CONFLICT (workspace,id) DO UPDATE
+                      SET same=EXCLUDED.same, confidence=EXCLUDED.confidence,
+                      preferred=EXCLUDED.preferred, reason=EXCLUDED.reason,
+                      update_time=CURRENT_TIMESTAMP
+                     """,
+    # Every entity name the workspace has decided on: the targets Fase 2 compares against.
+    "known_entity_aliases": """SELECT DISTINCT canonical_entity_id, entity_type FROM hybrid_rag_entity_alias
+                      WHERE workspace=$1 AND decision = 'same'
+                     """,
     "upsert_relation_chunks": """INSERT INTO hybrid_rag_relation_chunks (workspace, id, chunk_ids, count,
                       create_time, update_time)
                       VALUES ($1, $2, $3, $4, $5, $6)
@@ -476,6 +548,15 @@ SQL_TEMPLATES = {
     "entities": """
                 SELECT entity_name,
                        EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at
+                FROM {table_name}
+                WHERE workspace = $1
+                  AND content_vector <=> $4::{vector_cast} < $2
+                ORDER BY (content_vector <=> $4::{vector_cast}) + 0
+                LIMIT $3;
+                """,
+    # Entity resolution candidates: like "entities", plus the cosine distance.
+    "entities_nearest": """
+                SELECT entity_name, (content_vector <=> $4::{vector_cast}) AS distance
                 FROM {table_name}
                 WHERE workspace = $1
                   AND content_vector <=> $4::{vector_cast} < $2

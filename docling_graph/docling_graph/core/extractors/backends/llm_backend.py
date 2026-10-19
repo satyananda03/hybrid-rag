@@ -1,0 +1,1838 @@
+"""
+LLM (Language Model) extraction backend.
+
+Performs direct full-document extraction via extract_from_markdown() in a single LLM call.
+Best-effort: coerces QuantityWithUnit scalars and prunes invalid fields on validation errors.
+"""
+
+import ast
+import copy
+import gc
+import hashlib
+import json
+import os
+import re
+from functools import lru_cache
+from typing import Any, Literal, Mapping, Type, cast, get_args
+
+from pydantic import BaseModel, ValidationError
+
+from ....exceptions import ClientError
+from ....llm_clients.config import _DEFAULT_MAX_OUTPUT_TOKENS
+from ....logging_utils import get_component_logger
+from ....protocols import LLMClientProtocol
+from ..contracts import direct
+from ..contracts.auto import (
+    CHARS_PER_TOKEN as _CHARS_PER_TOKEN,
+    DIRECT_OVERFLOW_RATIO as _DIRECT_OVERFLOW_RATIO,
+)
+from ..contracts.dense.backend_ops import run_dense_orchestrator
+from ..gleaning import merge_gleaned_direct, run_gleaning_pass_direct
+
+logger = get_component_logger("LlmBackend", __name__)
+
+
+class LlmBackend:
+    """
+    Backend for LLM-based extraction.
+
+    Performs direct full-document extraction via extract_from_markdown().
+    """
+
+    def __init__(
+        self,
+        llm_client: LLMClientProtocol,
+        extraction_contract: Literal["direct", "dense", "auto"] = "direct",
+        dense_config: dict[str, Any] | None = None,
+        structured_output: bool = True,
+        structured_sparse_check: bool = True,
+    ) -> None:
+        """
+        Initialize LLM backend with a client.
+
+        Args:
+            llm_client: LLM client instance implementing LLMClientProtocol
+        """
+        self.client = llm_client
+        self.extraction_contract: Literal["direct", "dense", "auto"] = extraction_contract
+        self._dense_config_raw = dense_config or {}
+        self.structured_output = structured_output
+        self.structured_sparse_check = structured_sparse_check
+        # Serialization the LLM sees (markdown | doclang | doclang-geo). Sourced
+        # from the shared config dict so direct and dense prompts can be framed.
+        self.llm_input_format = str(self._dense_config_raw.get("llm_input_format", "markdown"))
+        self.trace_data: Any = None  # Set by strategy when config.debug is True
+        self.last_call_diagnostics: dict[str, Any] = {}
+        # Terminal Pydantic error set from the most recent failed validation
+        # (empty after a successful one); persisted to debug artifacts so a
+        # discarded extraction is never opaque.
+        self.last_validation_errors: list[dict[str, Any]] = []
+        # Per-run dense observability (skeleton_nodes, truncation/split counts,
+        # merge/orphan stats); surfaced in metadata.json and the report.
+        self.last_dense_stats: dict[str, Any] = {}
+        # Per-run provenance ledger from dense extraction; None when disabled,
+        # when dense produced no result (a direct fallback result is NOT
+        # described by a failed dense run's ledger), or for direct extraction.
+        self.last_provenance: Any = None
+        self._retry_on_truncation = bool(self._dense_config_raw.get("retry_on_truncation", True))
+        self._truncation_retry_multiplier = max(
+            1.0,
+            float(self._dense_config_raw.get("truncation_retry_max_tokens_multiplier", 2.0)),
+        )
+        self._truncation_retry_cap = 32768
+        # Escalating max_tokens is pointless once a bigger budget has also
+        # truncated (degenerate/oversized output); learned per run so later
+        # calls skip the wasted retry and go straight to batch splitting.
+        self._escalation_futile = False
+        # Emit the "document too large for direct extraction" hint at most once.
+        self._dense_hint_emitted = False
+        # Dense runs within one backend lifetime get numbered debug artifacts
+        # (first run keeps plain names) so a retry can never overwrite a
+        # previous attempt's dense_*.json files.
+        self._dense_attempt_count = 0
+        self._dense_debug_suffix = ""
+
+        # Get model identifier for logging
+        model_attr = getattr(llm_client, "model", None) or getattr(llm_client, "model_id", None)
+
+        logger.info(
+            "Initialized (client=%s, model=%s)",
+            self.client.__class__.__name__,
+            model_attr or "unknown",
+        )
+
+    def _get_json_response(
+        self,
+        prompt: str | Mapping[str, str],
+        schema_json: str,
+        structured_output: bool = True,
+        response_top_level: Literal["object", "array"] = "object",
+        response_schema_name: str = "extraction_result",
+    ) -> dict | list | None:
+        """Get JSON response, using streaming if enabled."""
+        streaming_attr = getattr(self.client, "streaming", False)
+        is_streaming = isinstance(streaming_attr, bool) and streaming_attr
+        if is_streaming:
+            result_iter = self.client.get_json_response_stream(
+                prompt=prompt,
+                schema_json=schema_json,
+                structured_output=structured_output,
+                response_top_level=response_top_level,
+                response_schema_name=response_schema_name,
+            )
+            return next(result_iter)
+        result: object = self.client.get_json_response(
+            prompt=prompt,
+            schema_json=schema_json,
+            structured_output=structured_output,
+            response_top_level=response_top_level,
+            response_schema_name=response_schema_name,
+        )
+        if isinstance(result, dict | list):
+            return result
+        return None
+
+    @staticmethod
+    @lru_cache(maxsize=32)
+    def _get_schema_json(template: Type[BaseModel]) -> str:
+        """
+        Get cached JSON schema for a Pydantic template.
+
+        Uses LRU cache to avoid repeated serialization of the same template.
+        This provides significant performance improvement when the same template
+        is used multiple times.
+
+        Args:
+            template: Pydantic model class
+
+        Returns:
+            JSON string representation of the model schema
+        """
+        return json.dumps(template.model_json_schema(), indent=2)
+
+    @staticmethod
+    @lru_cache(maxsize=32)
+    def _get_schema_dict(template: Type[BaseModel]) -> dict[str, Any]:
+        """Get cached schema dict for a Pydantic template."""
+        schema = template.model_json_schema()
+        return schema if isinstance(schema, dict) else {}
+
+    def _write_dense_debug(self, name: str, payload: Any) -> None:
+        """Write a JSON debug artifact next to the orchestrator's dense files.
+
+        No-op unless a debug_dir is configured (--debug). Uses the same
+        per-attempt suffix as the orchestrator so a dense retry never
+        overwrites a previous attempt's artifacts.
+        """
+        debug_dir = str(self._dense_config_raw.get("debug_dir") or "")
+        if not debug_dir:
+            return
+        try:
+            os.makedirs(debug_dir, exist_ok=True)
+            stem, ext = os.path.splitext(name)
+            path = os.path.join(debug_dir, f"{stem}{self._dense_debug_suffix}{ext}")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, default=str)
+        except OSError as e:
+            logger.debug("Failed to write dense debug artifact %s: %s", name, e)
+
+    def _log_info(self, message: str, **kwargs: Any) -> None:
+        """Log info message with consistent formatting."""
+        if kwargs:
+            message += "".join(f" ({value} {key})" for key, value in kwargs.items())
+        logger.info(message)
+
+    def _log_extraction(self, message: str, prefix: str) -> None:
+        """Log extraction-phase message with contract-specific prefix (e.g. DirectExtraction)."""
+        logger.info(message, extra={"component": prefix})
+
+    def _log_success(self, message: str) -> None:
+        """Log success message."""
+        logger.info(message)
+
+    def _log_warning(self, message: str) -> None:
+        """Log warning message."""
+        logger.warning(message)
+
+    def _log_error(self, message: str, exception: Exception | None = None) -> None:
+        """Log error message with optional exception details."""
+        if exception:
+            message += f" {type(exception).__name__}: {exception}"
+        logger.error(message)
+
+    def _log_validation_error(
+        self, context: str, error: ValidationError, raw_data: dict | list
+    ) -> None:
+        """Log detailed validation error information. Raw data is stored in trace_data when present."""
+        details = "; ".join(
+            f"{' -> '.join(map(str, err['loc']))}: {err['msg']}" for err in error.errors()
+        )
+        logger.warning(
+            "Validation error for %s: the data extracted by the LLM does not match "
+            "your Pydantic template. Details: %s",
+            context,
+            details,
+        )
+        if self.trace_data is not None:
+            self.trace_data.emit(
+                "validation_error_raw_data",
+                "extraction",
+                {"context": context, "raw_data": raw_data},
+            )
+
+    @staticmethod
+    def _is_quantity_with_unit_error(err: dict) -> bool:
+        """True if this validation error is for a QuantityWithUnit expected type."""
+        ctx = err.get("ctx") or {}
+        if isinstance(ctx, dict) and ctx.get("class_name") == "QuantityWithUnit":
+            return True
+        msg = err.get("msg", "")
+        return "QuantityWithUnit" in msg
+
+    @staticmethod
+    def _coerce_scalar_to_quantity_with_unit(v: Any) -> dict:
+        """Coerce a scalar to a QuantityWithUnit-like object."""
+        if isinstance(v, int | float):
+            return {"numeric_value": float(v)}
+        if isinstance(v, str):
+            v_clean = re.sub(r"[^\d.\-eE]", "", v)
+            try:
+                return {"numeric_value": float(v_clean)}
+            except ValueError:
+                return {"text_value": v}
+        return {"numeric_value": None, "text_value": str(v)}
+
+    @staticmethod
+    def _get_at_path(data: dict | list, loc: tuple) -> Any:
+        """Get value at path (loc is tuple of keys/indices)."""
+        if not loc:
+            return data
+        current: Any = data
+        for key in loc:
+            current = current[key]
+        return current
+
+    @staticmethod
+    def _set_at_path(data: dict | list, loc: tuple, value: Any) -> None:
+        """Set value at path (mutates data)."""
+        if not loc:
+            return
+        parent = LlmBackend._get_at_path(data, loc[:-1])
+        if parent is not None:
+            parent[loc[-1]] = value
+
+    @staticmethod
+    def _delete_at_path(data: dict | list, loc: tuple) -> None:
+        """Remove the leaf at loc (mutates data)."""
+        if not loc:
+            return
+        parent = LlmBackend._get_at_path(data, loc[:-1])
+        if parent is None:
+            return
+        leaf = loc[-1]
+        if isinstance(parent, dict):
+            parent.pop(leaf, None)
+        elif isinstance(parent, list) and isinstance(leaf, int) and 0 <= leaf < len(parent):
+            parent.pop(leaf)
+
+    def _apply_quantity_coercion(self, data: dict | list, errors: list) -> bool:
+        """
+        Coerce scalar values at QuantityWithUnit error locations.
+        Returns True if any coercion was applied.
+        """
+        changed = False
+        for err in errors:
+            if not self._is_quantity_with_unit_error(err):
+                continue
+            loc = tuple(err.get("loc", ()))
+            if not loc:
+                continue
+            try:
+                value = self._get_at_path(data, loc)
+            except (KeyError, IndexError, TypeError):
+                continue
+            if isinstance(value, dict):
+                continue
+            coerced = self._coerce_scalar_to_quantity_with_unit(value)
+            self._set_at_path(data, loc, coerced)
+            changed = True
+        return changed
+
+    def _content_fingerprint(self, entity: dict, exclude_keys: set[str] | None = None) -> str:
+        """Stable hash of entity content for deterministic synthetic IDs. Excludes given keys."""
+        exclude = (exclude_keys or set()) | {"__class__"}
+        stable = {k: v for k, v in entity.items() if k not in exclude}
+        content = json.dumps(stable, sort_keys=True, default=str)
+        return hashlib.blake2b(content.encode(), digest_size=8).hexdigest()
+
+    @staticmethod
+    def _resolve_schema_ref(node: dict[str, Any], defs: dict[str, Any]) -> dict[str, Any]:
+        """Resolve $ref in schema node; return resolved dict or node."""
+        ref = node.get("$ref")
+        if isinstance(ref, str) and (ref.startswith(("#/$defs/", "#/definitions/"))):
+            return cast(dict[str, Any], defs.get(ref.split("/")[-1], node))
+        return node
+
+    @staticmethod
+    def _schema_node_properties_or_any_of(
+        node: dict[str, Any], defs: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Return properties from node, or from first anyOf member if node uses anyOf."""
+        props = node.get("properties")
+        if isinstance(props, dict):
+            return props
+        any_of = node.get("anyOf")
+        if isinstance(any_of, list) and any_of:
+            first = LlmBackend._resolve_schema_ref(any_of[0], defs)
+            if isinstance(first, dict):
+                return first.get("properties") or {}
+        return {}
+
+    @staticmethod
+    def _get_field_schema_at_path(
+        template: type[BaseModel], loc: tuple, defs: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        """
+        Resolve JSON schema for the field at the given path (e.g. for enum default).
+        Walks root schema: properties -> key, array -> items, $ref -> $defs.
+        Handles anyOf (e.g. optional nested object) by using first branch for properties.
+        """
+        try:
+            schema = template.model_json_schema()
+        except Exception:
+            return None
+        root_defs = schema.get("$defs") or schema.get("definitions")
+        defs = defs if defs is not None else (root_defs if isinstance(root_defs, dict) else {})
+        node: dict[str, Any] = schema
+        for key in loc:
+            node = LlmBackend._resolve_schema_ref(node, defs)
+            if isinstance(key, int):
+                node = node.get("items") or {}
+            else:
+                props = LlmBackend._schema_node_properties_or_any_of(node, defs)
+                node = props.get(key) or {}
+            if not node:
+                return None
+        node = LlmBackend._resolve_schema_ref(node, defs)
+        return node if isinstance(node, dict) else None
+
+    @staticmethod
+    def _enum_default_from_schema(field_schema: dict[str, Any]) -> Any:
+        """Return a valid enum value from schema: prefer OTHER, else first."""
+        enum_vals = field_schema.get("enum")
+        if not isinstance(enum_vals, list) or not enum_vals:
+            return None
+        for v in enum_vals:
+            if isinstance(v, str) and v.upper() == "OTHER":
+                return v
+        return enum_vals[0]
+
+    @staticmethod
+    def _unwrap_model_annotation(annotation: Any) -> type[BaseModel] | None:
+        """First BaseModel subclass inside an annotation (Optional/list wrappers)."""
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return annotation
+        for arg in get_args(annotation):
+            model = LlmBackend._unwrap_model_annotation(arg)
+            if model is not None:
+                return model
+        return None
+
+    @staticmethod
+    def _identity_fields_of_owner(template: type[BaseModel], loc: tuple) -> frozenset[str]:
+        """graph_id_fields of the model owning the field at ``loc`` (empty when unresolvable)."""
+        current: type[BaseModel] | None = template
+        for segment in loc[:-1]:
+            if current is None:
+                return frozenset()
+            if isinstance(segment, int):
+                continue
+            field_info = current.model_fields.get(str(segment))
+            if field_info is None:
+                return frozenset()
+            current = LlmBackend._unwrap_model_annotation(field_info.annotation)
+        if current is None:
+            return frozenset()
+        config = getattr(current, "model_config", {}) or {}
+        raw = config.get("graph_id_fields", []) if isinstance(config, dict) else []
+        return frozenset(f for f in raw if isinstance(f, str))
+
+    def _drop_instances_missing_identity(
+        self,
+        data: dict | list,
+        errors: list,
+        template: type[BaseModel] | None,
+    ) -> bool:
+        """Remove instances whose REQUIRED identity field is missing, instead of
+        fabricating one.
+
+        Identity is sacred: a generated or blank value for a graph_id_fields
+        member does not salvage the instance, it mints a phantom entity (an
+        ""-named hub absorbing edges in the graph). Dropping mirrors what
+        template-side list filters do, and is logged loudly. Deletions shift
+        list indices, so when this fires the caller must re-validate before
+        applying any other fixer. The root instance (loc of length 1) is never
+        dropped — there is nothing to fall back to.
+        """
+        if template is None:
+            return False
+        drop_locs: set[tuple] = set()
+        for err in errors:
+            if err.get("type") != "missing":
+                continue
+            loc = tuple(err.get("loc", ()))
+            if len(loc) < 2 or not isinstance(loc[-1], str):
+                continue
+            if loc[-1] in self._identity_fields_of_owner(template, loc):
+                drop_locs.add(loc[:-1])
+        if not drop_locs:
+            return False
+
+        # Deepest-first, and within one container highest index first, so a
+        # deletion can never shift the position of a later one.
+        def _order(loc: tuple) -> tuple:
+            return (
+                len(loc),
+                tuple((0, str(seg)) if isinstance(seg, str) else (1, seg) for seg in loc),
+            )
+
+        for parent_loc in sorted(drop_locs, key=_order, reverse=True):
+            self._delete_at_path(data, parent_loc)
+        self._log_warning(
+            f"Salvage: dropped {len(drop_locs)} instance(s) missing a required identity "
+            "field instead of fabricating identity (phantom-hub guard)"
+        )
+        return True
+
+    def _fill_missing_required_fields(
+        self,
+        data: dict | list,
+        errors: list,
+        template: type[BaseModel] | None = None,
+    ) -> bool:
+        """
+        Fill missing required fields with deterministic or template-derived values so
+        validation can succeed when the LLM omits identity fields. Root-level
+        "document identifier" fields (by naming convention) use template name when
+        template is provided. Enum fields use schema enum default (e.g. OTHER).
+        Returns True if any value was set.
+        """
+        changed = False
+        missing_errors = [e for e in errors if e.get("type") == "missing"]
+        sorted_errors = sorted(missing_errors, key=lambda e: len(e.get("loc", ())))
+        seen_locs: set[tuple] = set()
+        for err in sorted_errors:
+            loc = tuple(err.get("loc", ()))
+            if not loc or loc in seen_locs:
+                continue
+            field_name = loc[-1] if isinstance(loc[-1], str) else None
+            if not field_name:
+                continue
+            try:
+                parent = self._get_at_path(data, loc[:-1])
+                if not (parent is not None and isinstance(parent, dict) and loc[-1] not in parent):
+                    continue
+            except (KeyError, IndexError, TypeError):
+                continue
+            # Root-level "document identifier" field (convention: name contains reference/document): use template name
+            is_root = len(loc) == 1
+            fn_lower = (field_name or "").lower()
+            is_doc_id = ("reference" in fn_lower and "document" in fn_lower) or fn_lower.endswith(
+                "_document"
+            )
+            if template is not None and is_root and is_doc_id:
+                value = getattr(template, "__name__", None) or "Document"
+            elif template is not None:
+                # Enum-aware: use schema enum default (e.g. OTHER) so validation passes
+                field_schema = self._get_field_schema_at_path(template, loc)
+                if field_schema:
+                    enum_default = self._enum_default_from_schema(field_schema)
+                    if enum_default is not None:
+                        value = enum_default
+                    else:
+                        # Identity-like fields (e.g. *_id) get stable generated IDs; other strings get ""
+                        fingerprint = self._content_fingerprint(parent, exclude_keys={field_name})
+                        if field_name.endswith("_id"):
+                            prefix = field_name[:-3].upper()
+                            prefix = prefix[:4] if len(prefix) > 4 else prefix
+                            value = f"{prefix}-{fingerprint}"
+                        else:
+                            value = ""
+                else:
+                    fingerprint = self._content_fingerprint(parent, exclude_keys={field_name})
+                    if field_name.endswith("_id"):
+                        prefix = field_name[:-3].upper()
+                        prefix = prefix[:4] if len(prefix) > 4 else prefix
+                        value = f"{prefix}-{fingerprint}"
+                    else:
+                        value = ""
+            else:
+                # No template: identity-like fields get generated ID; other strings get ""
+                fingerprint = self._content_fingerprint(parent, exclude_keys={field_name})
+                if field_name.endswith("_id"):
+                    prefix = field_name[:-3].upper()
+                    prefix = prefix[:4] if len(prefix) > 4 else prefix
+                    value = f"{prefix}-{fingerprint}"
+                else:
+                    value = ""
+            self._set_at_path(data, loc, value)
+            seen_locs.add(loc)
+            changed = True
+        return changed
+
+    # A string value at least this long is prose (a clause, a description body),
+    # not a label — a dict carrying prose is a full entity block, and its inner
+    # name must never be pulled up into a parent scalar field.
+    _COMPLEX_TEXT_MIN_CHARS = 80
+
+    @staticmethod
+    def _looks_like_complex_block(d: dict) -> bool:
+        """True when a dict carries structured content, not just a simple label.
+
+        Structural and domain-agnostic: a full entity block (an item with its
+        sub-lists, a clause with its prose) nests containers or long text; a
+        simple labeled reference is a couple of short scalars. Single-key
+        dicts are never complex — there is nothing to confuse the label with.
+        """
+        if not isinstance(d, dict) or len(d) <= 1:
+            return False
+        for value in d.values():
+            if isinstance(value, list | dict):
+                return True
+            if isinstance(value, str) and len(value) >= LlmBackend._COMPLEX_TEXT_MIN_CHARS:
+                return True
+        return False
+
+    @classmethod
+    def _extract_string_from_list_or_dict(cls, value: Any) -> str | None:
+        """
+        Extract a single string from a list or dict when schema expected string.
+        Domain-agnostic: uses common identity-like keys and first string element.
+        Skips dicts that look like full entity blocks (nested containers or long
+        prose) so their inner name is not used for a parent field (e.g. a child
+        item's name coerced into its container's name).
+        """
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, int | float | bool):
+            return str(value)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+                if isinstance(item, dict):
+                    if cls._looks_like_complex_block(item):
+                        continue
+                    for key in ("nom", "name", "title", "id", "label"):
+                        if key in item and item[key] is not None:
+                            s = item[key]
+                            if isinstance(s, str) and s.strip():
+                                return s.strip()
+                            if isinstance(s, int | float | bool):
+                                return str(s)
+                    for v in item.values():
+                        if isinstance(v, str) and v.strip():
+                            return v.strip()
+            return None
+        if isinstance(value, dict):
+            if cls._looks_like_complex_block(value):
+                return None
+            for key in ("nom", "name", "title", "id", "label"):
+                if key in value and value[key] is not None:
+                    s = value[key]
+                    if isinstance(s, str) and s.strip():
+                        return s.strip()
+                    if isinstance(s, int | float | bool):
+                        return str(s)
+            for v in value.values():
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+            return None
+        return None
+
+    def _coerce_string_type_errors(self, data: dict | list, errors: list) -> bool:
+        """
+        Coerce values to string when validation expected string but got int/float/bool/list/dict.
+        Returns True if any value was coerced (caller should retry validation).
+        Preserves list items by extracting a string from list/dict instead of pruning.
+        """
+        # Pydantic v2: "string_type" = expected string, got other; "int_type" etc. = wrong scalar type
+        coercible_types = ("int_type", "float_type", "bool_type", "string_type")
+        changed = False
+        seen_locs: set[tuple] = set()
+        for err in errors:
+            err_type = err.get("type")
+            if err_type not in coercible_types:
+                continue
+            loc = tuple(err.get("loc", ()))
+            if not loc or loc in seen_locs:
+                continue
+            try:
+                value = self._get_at_path(data, loc)
+            except (KeyError, IndexError, TypeError):
+                continue
+            coerced: str | None = None
+            if value is None:
+                # A null for a field that rejects None (else Pydantic would not
+                # have raised string_type) — same recovery as a missing field.
+                if err_type == "string_type":
+                    coerced = ""
+            elif isinstance(value, int | float | bool):
+                coerced = str(value)
+            elif isinstance(value, list | dict):
+                coerced = self._extract_string_from_list_or_dict(value)
+                if coerced is None:
+                    coerced = ""
+            if coerced is None:
+                continue
+            try:
+                self._set_at_path(data, loc, coerced)
+                seen_locs.add(loc)
+                changed = True
+            except (KeyError, IndexError, TypeError):
+                continue
+        return changed
+
+    def _coerce_list_type_errors(self, data: dict | list, errors: list) -> bool:
+        """
+        Coerce scalar values to single-element list when validation expected list (e.g. list[str])
+        but got string or other scalar (Pydantic v2 type=list_type).
+        Returns True if any value was coerced (caller should retry validation).
+        """
+        changed = False
+        seen_locs: set[tuple] = set()
+        for err in errors:
+            if err.get("type") != "list_type":
+                continue
+            loc = tuple(err.get("loc", ()))
+            if not loc or loc in seen_locs:
+                continue
+            try:
+                value = self._get_at_path(data, loc)
+            except (KeyError, IndexError, TypeError):
+                continue
+            if isinstance(value, list):
+                continue
+            try:
+                # String that looks like a Python list literal (e.g. "['locataire']")
+                if isinstance(value, str):
+                    s = value.strip()
+                    if s.startswith("[") and s.endswith("]"):
+                        try:
+                            parsed = ast.literal_eval(s)
+                            if isinstance(parsed, list):
+                                list_value = list(parsed)
+                                self._set_at_path(data, loc, list_value)
+                                seen_locs.add(loc)
+                                changed = True
+                                continue
+                        except (ValueError, SyntaxError):
+                            pass
+                    if "," in value:
+                        list_value = [s.strip() for s in value.split(",") if s.strip()]
+                    else:
+                        list_value = [value]
+                else:
+                    list_value = [value]
+                self._set_at_path(data, loc, list_value)
+                seen_locs.add(loc)
+                changed = True
+            except (KeyError, IndexError, TypeError):
+                continue
+        return changed
+
+    @staticmethod
+    def _model_for_loc(template: Type[BaseModel], loc: tuple) -> Type[BaseModel] | None:
+        """Resolve the nested model class a validation-error loc points at.
+
+        Walks the template's field annotations along the loc, skipping list
+        indices; returns None when any segment does not resolve to a model.
+        """
+        from typing import get_args
+
+        def unwrap(annotation: Any) -> Type[BaseModel] | None:
+            if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+                return annotation
+            for arg in get_args(annotation):
+                found = unwrap(arg)
+                if found is not None:
+                    return found
+            return None
+
+        current: Type[BaseModel] | None = template
+        for part in loc:
+            if isinstance(part, int):
+                continue
+            if current is None:
+                return None
+            field = current.model_fields.get(str(part))
+            if field is None:
+                return None
+            current = unwrap(field.annotation)
+        return current
+
+    def _coerce_model_type_strings(
+        self, data: dict | list, errors: list, template: Type[BaseModel]
+    ) -> bool:
+        """Coerce a bare string into an identity-only instance where a model is expected.
+
+        Reference-style fields (id-only lists such as memberships) are the
+        common case: the schema asks for ``[{"nom": "Jardin"}]`` and a small
+        model shortcuts to ``["Jardin"]``. Without this fixer the model_type
+        errors fall through to field pruning, which deletes the memberships —
+        observed to erase ~50 real edges from one drifted fill response. The
+        string becomes ``{<first graph_id_field>: value}``; models without
+        identity fields are left for the pruner.
+        """
+        changed = False
+        seen_locs: set[tuple] = set()
+        for err in errors:
+            if err.get("type") != "model_type":
+                continue
+            loc = tuple(err.get("loc", ()))
+            if not loc or loc in seen_locs:
+                continue
+            try:
+                value = self._get_at_path(data, loc)
+            except (KeyError, IndexError, TypeError):
+                continue
+            if not isinstance(value, str) or not value.strip():
+                continue
+            target = self._model_for_loc(template, loc)
+            if target is None:
+                continue
+            config = getattr(target, "model_config", {}) or {}
+            id_fields = config.get("graph_id_fields", []) if hasattr(config, "get") else []
+            id_fields = [f for f in id_fields if isinstance(f, str) and f in target.model_fields]
+            if not id_fields:
+                continue
+            try:
+                self._set_at_path(data, loc, {id_fields[0]: value.strip()})
+                seen_locs.add(loc)
+                changed = True
+            except (KeyError, IndexError, TypeError):
+                continue
+        return changed
+
+    def _prune_invalid_fields(self, data: dict | list, errors: list) -> None:
+        """
+        Remove offending leaf fields indicated by validation error locs.
+        Mutates data in place. For list element errors, removes the element.
+        """
+        # Sort by loc length descending so we prune deepest first (avoid index shift)
+        sorted_errors = sorted(errors, key=lambda e: len(e.get("loc", ())), reverse=True)
+        seen_locs: set[tuple] = set()
+        for err in sorted_errors:
+            loc = tuple(err.get("loc", ()))
+            if not loc or loc in seen_locs:
+                continue
+            seen_locs.add(loc)
+            self._delete_at_path(data, loc)
+
+    def _validate_extraction(
+        self, parsed_json: dict | list, template: Type[BaseModel], context: str
+    ) -> BaseModel | None:
+        """
+        Validate parsed JSON against Pydantic template.
+
+        Best-effort: on ValidationError, tries (1) QuantityWithUnit coercion,
+        (2) filling missing required fields with generated values,
+        (3) coercing int/float/bool to string where string is expected,
+        (4) coercing scalar to single-element list where list is expected,
+        (5) pruning invalid fields, then re-validates (up to 3 passes).
+        """
+        data: dict | list = copy.deepcopy(parsed_json)
+        max_salvage_passes = 3
+        self.last_validation_errors = []
+
+        # max_salvage_passes mutation rounds, but one more validation attempt
+        # than that: fixes applied on the last round must still be validated
+        # (a fill->prune->fill sequence consumes every round and used to exit
+        # the loop with data that had just become valid).
+        for pass_num in range(max_salvage_passes + 1):
+            try:
+                validated_model = template.model_validate(data)
+                if pass_num > 0:
+                    self._log_warning(
+                        f"Extraction validated after best-effort salvage (pass {pass_num + 1})"
+                    )
+                self._log_success(f"Successfully extracted data from {context}")
+                return validated_model
+            except ValidationError as e:
+                if pass_num == 0:
+                    self._log_validation_error(context, e, parsed_json)
+
+                errors = e.errors()
+                if pass_num == max_salvage_passes:
+                    # Exhausted: keep the terminal error set for debug artifacts.
+                    self.last_validation_errors = [
+                        {
+                            "loc": list(err.get("loc", ())),
+                            "type": err.get("type"),
+                            "msg": err.get("msg"),
+                        }
+                        for err in errors
+                    ]
+                    break
+                # Identity guard first and alone: dropping an instance shifts
+                # list indices, so no other fixer may act on this error set —
+                # re-validate immediately instead.
+                if self._drop_instances_missing_identity(data, errors, template=template):
+                    continue
+
+                any_fixed = False
+
+                # First pass: try QuantityWithUnit coercion
+                if pass_num == 0 and self._apply_quantity_coercion(data, errors):
+                    any_fixed = True
+
+                # Fill missing required fields with enum or generated values
+                if self._fill_missing_required_fields(data, errors, template=template):
+                    any_fixed = True
+
+                # Coerce int/float/bool to string where schema expects string
+                if self._coerce_string_type_errors(data, errors):
+                    any_fixed = True
+
+                # Coerce bare strings to identity-only instances where a model
+                # is expected (id-only reference lists emitted as name strings)
+                if self._coerce_model_type_strings(data, errors, template=template):
+                    any_fixed = True
+
+                # Coerce scalar to list where schema expects list (comma-split when string)
+                if self._coerce_list_type_errors(data, errors):
+                    any_fixed = True
+
+                if any_fixed:
+                    continue
+
+                # Prune invalid fields and retry
+                self._prune_invalid_fields(data, errors)
+
+        self._log_warning("Validation failed after best-effort salvage")
+        return None
+
+    @staticmethod
+    def _count_non_empty_values(value: Any) -> int:
+        """Count non-empty populated values recursively."""
+        if value is None:
+            return 0
+        if isinstance(value, str):
+            return 1 if value.strip() else 0
+        if isinstance(value, int | float | bool):
+            return 1
+        if isinstance(value, list):
+            return sum(LlmBackend._count_non_empty_values(v) for v in value)
+        if isinstance(value, dict):
+            return sum(LlmBackend._count_non_empty_values(v) for v in value.values())
+        return 1
+
+    @staticmethod
+    def _count_schema_leaf_fields(schema: dict[str, Any]) -> int:
+        """Approximate number of schema leaf fields for sparsity checks."""
+        _defs = schema.get("$defs")
+        defs: dict[str, Any] = _defs if isinstance(_defs, dict) else {}
+
+        def _resolve(node: dict[str, Any]) -> dict[str, Any]:
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                key = ref.split("/")[-1]
+                resolved = defs.get(key)
+                if isinstance(resolved, dict):
+                    return resolved
+            return node
+
+        def _walk(node: dict[str, Any], depth: int) -> int:
+            if depth > 6:
+                return 0
+            node = _resolve(node)
+            props = node.get("properties") if isinstance(node.get("properties"), dict) else {}
+            if not props:
+                return 1
+            total = 0
+            for raw in props.values():
+                if not isinstance(raw, dict):
+                    continue
+                item = _resolve(raw)
+                if item.get("type") == "array" and isinstance(item.get("items"), dict):
+                    total += _walk(item["items"], depth + 1)
+                else:
+                    total += _walk(item, depth + 1)
+            return max(total, 1)
+
+        return _walk(schema, 1)
+
+    def _is_sparse_structured_result(
+        self, parsed_json: dict | list, schema_dict: dict[str, Any], markdown: str
+    ) -> bool:
+        """Detect obvious structured-output under-extraction before graph conversion."""
+        if len(markdown) < 400:
+            return False
+        non_empty = self._count_non_empty_values(parsed_json)
+        schema_leafs = self._count_schema_leaf_fields(schema_dict)
+        if schema_leafs < 10:
+            return False
+        ratio = non_empty / max(schema_leafs, 1)
+        return ratio < 0.40
+
+    def _call_llm_for_extraction(
+        self,
+        markdown: str,
+        schema_json: str,
+        schema_dict: dict[str, Any],
+        is_partial: bool,
+        context: str,
+        template: Type[BaseModel] | None = None,
+        allow_dense: bool = True,
+    ) -> dict | list | None:
+        """
+        Call LLM and return parsed JSON or None on failure.
+
+        Args:
+            markdown: Markdown content to extract from
+            schema_json: JSON schema string
+            is_partial: Whether this is partial extraction
+            context: Context description for logging
+            allow_dense: If False, skip the dense single-chunk path (used when
+                a chunked dense run already failed for this document)
+
+        Returns:
+            Parsed JSON (dict or list) or None if call failed
+        """
+        try:
+            if allow_dense and self.extraction_contract == "dense" and not is_partial:
+                dense_result = self._extract_with_dense_contract(
+                    markdown=markdown,
+                    context=context,
+                    template=template,
+                    trace_data=getattr(self, "trace_data", None),
+                )
+                if dense_result:
+                    return dense_result
+                self._log_warning(
+                    f"Dense extraction produced no JSON for {context}; falling back to direct."
+                )
+
+            prompt = direct.get_extraction_prompt(
+                markdown_content=markdown,
+                schema_json=schema_json,
+                is_partial=is_partial,
+                model_config=None,  # No capability-based branching
+                structured_output=self.structured_output,
+                schema_dict=schema_dict,
+                input_format=self.llm_input_format,
+            )
+            self.last_call_diagnostics = {
+                "structured_attempted": bool(self.structured_output),
+                "structured_failed": False,
+                "fallback_used": False,
+                "fallback_error_class": None,
+            }
+            structured_primary_attempt_parsed_json: dict | list | None = None
+            structured_primary_attempt_raw: str | None = None
+            try:
+                parsed_json = self._get_json_response(
+                    prompt=prompt,
+                    schema_json=schema_json,
+                    structured_output=self.structured_output,
+                    response_top_level="object",
+                    response_schema_name="direct_extraction",
+                )
+                if self.structured_output and self.trace_data is not None:
+                    structured_primary_attempt_parsed_json = copy.deepcopy(parsed_json)
+                    primary_diag = getattr(self.client, "last_call_diagnostics", None)
+                    if isinstance(primary_diag, dict):
+                        raw_value = primary_diag.get("raw_response")
+                        if isinstance(raw_value, str):
+                            structured_primary_attempt_raw = raw_value
+            except ClientError as e:
+                if not self.structured_output:
+                    raise
+                if self.trace_data is not None:
+                    self.trace_data.emit(
+                        "structured_output_fallback_triggered",
+                        "extraction",
+                        {
+                            "context": context,
+                            "reason": type(e).__name__,
+                            "error_message": str(e),
+                            "details": getattr(e, "details", {}),
+                            "provider": getattr(self.client, "provider", "unknown"),
+                            "model": getattr(
+                                self.client, "model", getattr(self.client, "model_id", "unknown")
+                            ),
+                        },
+                    )
+                if self.trace_data is not None:
+                    primary_diag = getattr(self.client, "last_call_diagnostics", None)
+                    if isinstance(primary_diag, dict):
+                        raw_value = primary_diag.get("raw_response")
+                        if isinstance(raw_value, str):
+                            structured_primary_attempt_raw = raw_value
+                self._log_warning(
+                    f"Structured output failed for {context}; falling back to legacy prompt-schema mode."
+                )
+                self.last_call_diagnostics = {
+                    "structured_attempted": True,
+                    "structured_failed": True,
+                    "fallback_used": True,
+                    "fallback_error_class": type(e).__name__,
+                }
+                logger.warning(
+                    "Structured output failed (provider=%s, model=%s): %s",
+                    getattr(self.client, "provider", "unknown"),
+                    getattr(self.client, "model", getattr(self.client, "model_id", "unknown")),
+                    str(e),
+                )
+                legacy_prompt = direct.get_extraction_prompt(
+                    markdown_content=markdown,
+                    schema_json=schema_json,
+                    is_partial=is_partial,
+                    model_config=None,
+                    structured_output=True,
+                    schema_dict=schema_dict,
+                    force_legacy_prompt_schema=True,
+                    input_format=self.llm_input_format,
+                )
+                parsed_json = self._get_json_response(
+                    prompt=legacy_prompt,
+                    schema_json=schema_json,
+                    structured_output=False,
+                    response_top_level="object",
+                    response_schema_name="direct_extraction",
+                )
+            if not parsed_json:
+                self._log_warning(f"No valid JSON returned from LLM for {context}")
+                return None
+            if (
+                self.structured_output
+                and self.structured_sparse_check
+                and not self.last_call_diagnostics.get("fallback_used")
+                and self._is_sparse_structured_result(parsed_json, schema_dict, markdown)
+            ):
+                if self.trace_data is not None:
+                    self.trace_data.emit(
+                        "structured_output_fallback_triggered",
+                        "extraction",
+                        {
+                            "context": context,
+                            "reason": "SparseStructuredOutput",
+                            "provider": getattr(self.client, "provider", "unknown"),
+                            "model": getattr(
+                                self.client, "model", getattr(self.client, "model_id", "unknown")
+                            ),
+                        },
+                    )
+                self._log_warning(
+                    f"Structured output appears sparse for {context}; retrying legacy prompt-schema mode."
+                )
+                self.last_call_diagnostics = {
+                    "structured_attempted": True,
+                    "structured_failed": True,
+                    "fallback_used": True,
+                    "fallback_error_class": "SparseStructuredOutput",
+                }
+                legacy_prompt = direct.get_extraction_prompt(
+                    markdown_content=markdown,
+                    schema_json=schema_json,
+                    is_partial=is_partial,
+                    model_config=None,
+                    structured_output=True,
+                    schema_dict=schema_dict,
+                    force_legacy_prompt_schema=True,
+                    input_format=self.llm_input_format,
+                )
+                legacy_json = self._get_json_response(
+                    prompt=legacy_prompt,
+                    schema_json=schema_json,
+                    structured_output=False,
+                    response_top_level="object",
+                    response_schema_name="direct_extraction",
+                )
+                if legacy_json:
+                    parsed_json = legacy_json
+            if self.trace_data is not None:
+                if structured_primary_attempt_parsed_json is not None:
+                    self.last_call_diagnostics["structured_primary_attempt_parsed_json"] = (
+                        structured_primary_attempt_parsed_json
+                    )
+                if structured_primary_attempt_raw is not None:
+                    self.last_call_diagnostics["structured_primary_attempt_raw"] = (
+                        structured_primary_attempt_raw
+                    )
+            client_diag = getattr(self.client, "last_call_diagnostics", None)
+            if isinstance(client_diag, dict) and client_diag:
+                self.last_call_diagnostics["structured_attempted"] = bool(
+                    self.last_call_diagnostics.get("structured_attempted")
+                    or client_diag.get("structured_attempted")
+                )
+                self.last_call_diagnostics["structured_failed"] = bool(
+                    self.last_call_diagnostics.get("structured_failed")
+                    or client_diag.get("structured_failed")
+                )
+                self.last_call_diagnostics["fallback_used"] = bool(
+                    self.last_call_diagnostics.get("fallback_used")
+                    or client_diag.get("fallback_used")
+                )
+                if not self.last_call_diagnostics.get("fallback_error_class"):
+                    self.last_call_diagnostics["fallback_error_class"] = client_diag.get(
+                        "fallback_error_class"
+                    )
+                for passthrough_key in ("provider", "model"):
+                    if passthrough_key in client_diag:
+                        self.last_call_diagnostics[passthrough_key] = client_diag[passthrough_key]
+
+            # Optional gleaning pass (direct only, full-doc)
+            if (
+                not is_partial
+                and template is not None
+                and isinstance(parsed_json, dict)
+                and self._dense_config_raw.get("gleaning_enabled")
+            ):
+
+                def _gleaning_llm_call(prompt_dict: dict) -> dict | list | None:
+                    return self._get_json_response(
+                        prompt=prompt_dict,
+                        schema_json=schema_json,
+                        structured_output=self.structured_output,
+                        response_top_level="object",
+                        response_schema_name="direct_extraction",
+                    )
+
+                gleaned = run_gleaning_pass_direct(
+                    markdown=markdown,
+                    existing_result=parsed_json,
+                    schema_json=schema_json,
+                    llm_call_fn=_gleaning_llm_call,
+                )
+                if isinstance(gleaned, dict) and gleaned:
+                    parsed_json = merge_gleaned_direct(
+                        parsed_json,
+                        gleaned,
+                        description_merge_fields=frozenset({"description", "summary"}),
+                        description_merge_max_length=4096,
+                    )
+            return parsed_json
+
+        except Exception as e:
+            self._log_error(f"Error during LLM call for {context}", e)
+            return None
+
+    def _get_client_max_tokens(self) -> int | None:
+        """Get current max_tokens from client (for retry calculation)."""
+        gen = getattr(self.client, "_generation", None)
+        if gen is not None and getattr(gen, "max_tokens", None) is not None:
+            return int(gen.max_tokens)
+        max_tok = getattr(self.client, "max_tokens", None)
+        if max_tok is not None:
+            return int(max_tok)
+        return None
+
+    def _estimated_output_token_budget(self) -> int:
+        """Best-effort output-token budget for the current model.
+
+        Falls back through the configured generation cap, the client's resolved
+        max output tokens, and finally the library default so a number is always
+        available for sizing heuristics.
+        """
+        budget = self._get_client_max_tokens()
+        if not isinstance(budget, int) or budget <= 0:
+            budget = getattr(self.client, "_max_output_tokens", None)
+        if not isinstance(budget, int) or budget <= 0:
+            budget = _DEFAULT_MAX_OUTPUT_TOKENS
+        return budget
+
+    def _maybe_hint_dense_for_large_direct(self, markdown: str) -> None:
+        """Warn (once) when a direct single call cannot plausibly fit its output.
+
+        A direct extraction returns the whole result in one response, so a
+        document much larger than the model's output budget will truncate no
+        matter how the prompt is tuned. Dense splits the work across many calls,
+        so it is the right contract for large documents — surfaced as a hint
+        rather than an automatic switch to keep the user in control.
+        """
+        if self.extraction_contract == "dense" or self._dense_hint_emitted:
+            return
+        budget_tokens = self._estimated_output_token_budget()
+        output_char_capacity = budget_tokens * _CHARS_PER_TOKEN
+        if len(markdown) > output_char_capacity * _DIRECT_OVERFLOW_RATIO:
+            self._dense_hint_emitted = True
+            self._log_warning(
+                f"Document is {len(markdown)} chars but the model's output budget is only "
+                f"~{budget_tokens} tokens (~{output_char_capacity} chars); a single-call direct "
+                "extraction is likely to truncate and lose data. Consider extraction_contract="
+                '"dense" (skeleton-then-flesh) or "auto" for large documents.'
+            )
+
+    def _preflight_fits_context(self, markdown: str, context: str) -> bool:
+        """Refuse a full-document call whose input arithmetically cannot fit.
+
+        Compares a conservative chars-per-token input estimate plus the output
+        budget against the client's resolved context window (probed from local
+        OpenAI-compatible servers when available). Returns True when the
+        context size is unknown or the call can fit — this is a guard against
+        certain failure, not a quality heuristic.
+        """
+        context_limit = getattr(self.client, "context_limit", None)
+        if not isinstance(context_limit, int) or context_limit <= 0:
+            return True
+        est_input_tokens = len(markdown) // _CHARS_PER_TOKEN
+        output_budget = self._estimated_output_token_budget()
+        if est_input_tokens + output_budget <= context_limit:
+            return True
+        self._log_error(
+            f"Skipping LLM call for {context}: ~{est_input_tokens} estimated input tokens "
+            f"+ {output_budget} output tokens cannot fit the model's context window "
+            f"({context_limit} tokens). Use extraction_contract='dense' (or 'auto') for "
+            "documents this large."
+        )
+        logger.warning(
+            "Full-document call for %s skipped: est_input=%d + max_output=%d > context_limit=%d",
+            context,
+            est_input_tokens,
+            output_budget,
+            context_limit,
+        )
+        return False
+
+    def _retry_max_tokens_for_truncation(self, context_max: int | None = None) -> int | None:
+        """Compute max_tokens for one retry after truncation, or None to skip escalation.
+
+        The ceiling is honest rather than a blind constant: never beyond half
+        the model's context window (probed from the provider/server when
+        available), and escalation stays disabled for the rest of the run once
+        it has proven futile.
+        """
+        if not self._retry_on_truncation or self._escalation_futile:
+            return None
+        current = context_max or self._get_client_max_tokens()
+        if current is None:
+            return None
+        ceiling = self._truncation_retry_cap
+        client_context = getattr(self.client, "context_limit", None)
+        if isinstance(client_context, int) and client_context > 0:
+            ceiling = min(ceiling, max(current, client_context // 2))
+        retry_max = min(int(current * self._truncation_retry_multiplier), ceiling)
+        return retry_max if retry_max > current else None
+
+    def _mark_escalation_futile(self, attempted_max_tokens: int) -> None:
+        """Stop escalating max_tokens for the rest of the run once it proved futile."""
+        if not self._escalation_futile:
+            self._escalation_futile = True
+            self._log_warning(
+                f"Output still truncated at max_tokens={attempted_max_tokens}; disabling "
+                "max_tokens escalation for this run (truncated batches are split instead)."
+            )
+
+    def _call_with_optional_max_tokens(
+        self,
+        prompt: dict[str, str],
+        schema_json: str,
+        max_tokens: int | None,
+        response_top_level: Literal["object", "array"] = "object",
+        response_schema_name: str = "extraction",
+        structured_output_override: bool | None = None,
+    ) -> dict | list | None:
+        """Invoke client with temporary max_tokens override when supported."""
+        structured_output = (
+            self.structured_output
+            if structured_output_override is None
+            else structured_output_override
+        )
+        generation = getattr(self.client, "_generation", None)
+        if generation is None or max_tokens is None:
+            return self.client.get_json_response(
+                prompt=prompt,
+                schema_json=schema_json,
+                structured_output=structured_output,
+                response_top_level=response_top_level,
+                response_schema_name=response_schema_name,
+            )
+        original = getattr(generation, "max_tokens", None)
+        try:
+            generation.max_tokens = max_tokens
+            return self.client.get_json_response(
+                prompt=prompt,
+                schema_json=schema_json,
+                structured_output=structured_output,
+                response_top_level=response_top_level,
+                response_schema_name=response_schema_name,
+            )
+        finally:
+            generation.max_tokens = original
+
+    def _call_prompt(
+        self,
+        prompt: dict[str, str],
+        schema_json: str,
+        context: str,
+        response_top_level: Literal["object", "array"] = "object",
+        response_schema_name: str = "extraction",
+        *,
+        max_tokens: int | None = None,
+        structured_output_override: bool | None = None,
+        allow_truncation_retry: bool = True,
+        _diagnostics_out: dict | None = None,
+    ) -> dict | list | None:
+        """Call LLM with explicit prompt/schema and optional truncation recovery.
+        Callers may pass max_tokens, structured_output_override (False = use legacy only),
+        and _diagnostics_out (dict to update with last_call_diagnostics).
+
+        ``allow_truncation_retry=False`` suppresses the in-call max_tokens
+        escalation so the caller can respond to truncation itself — the dense
+        skeleton path splits a multi-chunk batch *before* escalating (escalating
+        first just burns tokens against a repetition loop), and only escalates
+        when a single chunk cannot be split further.
+        """
+        call_max_tokens = max_tokens
+        try:
+            self.last_call_diagnostics = {
+                "structured_attempted": bool(self.structured_output),
+                "structured_failed": False,
+                "fallback_used": False,
+                "fallback_error_class": None,
+            }
+            use_legacy_only = structured_output_override is False
+            if use_legacy_only:
+                legacy_prompt = {
+                    "system": prompt["system"],
+                    "user": (
+                        prompt["user"]
+                        + "\n\n=== TARGET SCHEMA ===\n"
+                        + schema_json
+                        + "\n=== END SCHEMA ===\n\n"
+                    ),
+                }
+                parsed_json = self._call_with_optional_max_tokens(
+                    prompt=legacy_prompt,
+                    schema_json=schema_json,
+                    max_tokens=call_max_tokens,
+                    response_top_level=response_top_level,
+                    response_schema_name=response_schema_name,
+                    structured_output_override=False,
+                )
+                self.last_call_diagnostics["structured_attempted"] = True
+                self.last_call_diagnostics["fallback_used"] = True
+            else:
+                try:
+                    parsed_json = self._call_with_optional_max_tokens(
+                        prompt=prompt,
+                        schema_json=schema_json,
+                        max_tokens=call_max_tokens,
+                        response_top_level=response_top_level,
+                        response_schema_name=response_schema_name,
+                    )
+                except ClientError as e:
+                    if not self.structured_output:
+                        raise
+                    if self.trace_data is not None:
+                        self.trace_data.emit(
+                            "structured_output_fallback_triggered",
+                            "extraction",
+                            {
+                                "context": context,
+                                "reason": type(e).__name__,
+                                "error_message": str(e),
+                                "details": getattr(e, "details", {}),
+                                "provider": getattr(self.client, "provider", "unknown"),
+                                "model": getattr(
+                                    self.client,
+                                    "model",
+                                    getattr(self.client, "model_id", "unknown"),
+                                ),
+                            },
+                        )
+                    self._log_warning(
+                        f"Structured output failed for {context}; retrying with legacy prompt-schema mode."
+                    )
+                    self.last_call_diagnostics = {
+                        "structured_attempted": True,
+                        "structured_failed": True,
+                        "fallback_used": True,
+                        "fallback_error_class": type(e).__name__,
+                    }
+                    legacy_prompt = {
+                        "system": prompt["system"],
+                        "user": (
+                            prompt["user"]
+                            + "\n\n=== TARGET SCHEMA ===\n"
+                            + schema_json
+                            + "\n=== END SCHEMA ===\n\n"
+                        ),
+                    }
+                    parsed_json = self._call_with_optional_max_tokens(
+                        prompt=legacy_prompt,
+                        schema_json=schema_json,
+                        max_tokens=call_max_tokens,
+                        response_top_level=response_top_level,
+                        response_schema_name=response_schema_name,
+                        structured_output_override=False,
+                    )
+            if not parsed_json:
+                self._log_warning(f"No valid JSON returned from LLM for {context}")
+                return None
+            client_diag = getattr(self.client, "last_call_diagnostics", None)
+            if isinstance(client_diag, dict) and client_diag:
+                self.last_call_diagnostics["structured_attempted"] = bool(
+                    self.last_call_diagnostics.get("structured_attempted")
+                    or client_diag.get("structured_attempted")
+                )
+                self.last_call_diagnostics["structured_failed"] = bool(
+                    self.last_call_diagnostics.get("structured_failed")
+                    or client_diag.get("structured_failed")
+                )
+                self.last_call_diagnostics["fallback_used"] = bool(
+                    self.last_call_diagnostics.get("fallback_used")
+                    or client_diag.get("fallback_used")
+                )
+                if not self.last_call_diagnostics.get("fallback_error_class"):
+                    self.last_call_diagnostics["fallback_error_class"] = client_diag.get(
+                        "fallback_error_class"
+                    )
+                self.last_call_diagnostics["truncated"] = bool(
+                    self.last_call_diagnostics.get("truncated") or client_diag.get("truncated")
+                )
+                for passthrough_key in ("provider", "model"):
+                    if passthrough_key in client_diag:
+                        self.last_call_diagnostics[passthrough_key] = client_diag[passthrough_key]
+            if _diagnostics_out is not None:
+                _diagnostics_out.update(self.last_call_diagnostics)
+            return parsed_json
+        except Exception as e:
+            details = getattr(e, "details", {}) if isinstance(e, ClientError) else {}
+            truncated = bool(details.get("truncated")) if isinstance(details, dict) else False
+            if _diagnostics_out is not None and truncated:
+                _diagnostics_out["truncated"] = True
+            if truncated and self._retry_on_truncation and allow_truncation_retry:
+                context_max = call_max_tokens
+                if (
+                    context_max is None
+                    and isinstance(details, dict)
+                    and isinstance(details.get("max_tokens"), int)
+                ):
+                    context_max = int(details["max_tokens"])
+                retry_max = self._retry_max_tokens_for_truncation(context_max)
+                if retry_max is not None:
+                    # The retry must replicate the mode of the call that
+                    # truncated: silently switching a legacy-only caller (dense)
+                    # to API structured output would change the contract
+                    # mid-call and can hard-fail on grammar-validating servers.
+                    retry_legacy = structured_output_override is False
+                    retry_prompt = prompt
+                    if retry_legacy:
+                        retry_prompt = {
+                            "system": prompt["system"],
+                            "user": (
+                                prompt["user"]
+                                + "\n\n=== TARGET SCHEMA ===\n"
+                                + schema_json
+                                + "\n=== END SCHEMA ===\n\n"
+                            ),
+                        }
+                    try:
+                        self._log_warning(
+                            f"Retrying truncated call for {context} with max_tokens={retry_max}"
+                        )
+                        parsed_json = self._call_with_optional_max_tokens(
+                            prompt=retry_prompt,
+                            schema_json=schema_json,
+                            max_tokens=retry_max,
+                            response_top_level=response_top_level,
+                            response_schema_name=response_schema_name,
+                            structured_output_override=False if retry_legacy else None,
+                        )
+                        retry_diag = getattr(self.client, "last_call_diagnostics", None)
+                        if isinstance(retry_diag, dict) and retry_diag.get("truncated"):
+                            self._mark_escalation_futile(retry_max)
+                            if _diagnostics_out is not None:
+                                _diagnostics_out["truncated"] = True
+                        if parsed_json:
+                            return parsed_json
+                    except Exception as retry_e:
+                        retry_details = (
+                            getattr(retry_e, "details", {})
+                            if isinstance(retry_e, ClientError)
+                            else {}
+                        )
+                        if isinstance(retry_details, dict) and retry_details.get("truncated"):
+                            self._mark_escalation_futile(retry_max)
+                        self._log_error(f"Retry after truncation failed for {context}", retry_e)
+            self._log_error(f"Error during LLM call for {context}", e)
+            return None
+
+    def extract_from_chunk_batches(
+        self,
+        *,
+        chunks: list[str],
+        chunk_metadata: list[dict[str, Any]] | None,
+        template: Type[BaseModel],
+        context: str = "document",
+    ) -> BaseModel | None:
+        """Run dense extraction from pre-chunked content and validate final model."""
+        # "auto" reaches here only after the strategy resolved it to dense for
+        # this document, so it is accepted alongside an explicit "dense".
+        if self.extraction_contract in ("dense", "auto"):
+            self._log_extraction(
+                f"Running dense extraction ({len(chunks)} chunks)...",
+                "DenseExtraction",
+            )
+            full_markdown = "\n\n".join(chunks) if chunks else ""
+            parsed_json = self._run_dense_orchestrator(
+                chunks=chunks,
+                chunk_metadata=chunk_metadata,
+                full_markdown=full_markdown,
+                context=context,
+                template=template,
+                trace_data=getattr(self, "trace_data", None),
+            )
+        else:
+            # Batch extraction not supported for direct contract
+            self._log_error("Batch extraction only supported for dense contract")
+            return None
+        if not parsed_json:
+            return None
+        # Persist the assembled result BEFORE validation: a long dense run must
+        # stay manually recoverable even if the final validation discards it.
+        self._write_dense_debug("dense_assembled_root.json", parsed_json)
+        # No sparse veto here: dense has its own Phase 1 quality gate, and a
+        # sparse-but-valid dense result is always better than discarding it.
+        # (The schema-leaf sparsity heuristic penalizes large templates with
+        # many optional fields and was designed for direct structured output.)
+        model = self._validate_extraction(parsed_json, template, context)
+        if model is None:
+            self._write_dense_debug(
+                "dense_validation_errors.json",
+                {"context": context, "errors": self.last_validation_errors},
+            )
+            self._log_warning(
+                "Dense result failed validation; assembled JSON and error details "
+                "were saved to the debug directory (dense_assembled_root.json)."
+                if str(self._dense_config_raw.get("debug_dir") or "")
+                else "Dense result failed validation; re-run with --debug to persist "
+                "the assembled JSON for manual recovery."
+            )
+            # A ledger must never describe a result that failed validation.
+            self.last_provenance = None
+        return model
+
+    def _extract_with_dense_contract(
+        self,
+        markdown: str,
+        context: str,
+        template: Type[BaseModel] | None = None,
+        trace_data: Any = None,
+    ) -> dict | list | None:
+        """Dense extraction (skeleton + fill) with single-chunk fallback."""
+        chunks = [markdown]
+        chunk_metadata = [
+            {"chunk_id": 0, "token_count": max(1, len(markdown.split())), "page_numbers": [0]}
+        ]
+        return self._run_dense_orchestrator(
+            chunks=chunks,
+            chunk_metadata=chunk_metadata,
+            full_markdown=markdown,
+            context=context,
+            template=template,
+            trace_data=trace_data,
+        )
+
+    def call_id_reconciliation(
+        self,
+        *,
+        prompt: dict[str, str],
+        schema_json: str,
+        context: str = "graph",
+    ) -> dict | list | None:
+        """Public id-space reconciliation call for graph-level alias merging.
+
+        Uses the same legacy prompt-schema mode as the dense contract (no API
+        structured output) so provider-specific grammar quirks cannot break
+        graph cleanup. Cheap by construction: the prompt carries identifier
+        lists only, never document content.
+        """
+        return self._call_prompt(
+            prompt,
+            schema_json,
+            context,
+            response_top_level="object",
+            response_schema_name="alias_reconcile",
+            structured_output_override=False,
+        )
+
+    def _run_dense_orchestrator(
+        self,
+        *,
+        chunks: list[str],
+        chunk_metadata: list[dict[str, Any]] | None,
+        full_markdown: str,
+        context: str,
+        template: Type[BaseModel] | None,
+        trace_data: Any,
+    ) -> dict | list | None:
+        """Run dense orchestrator (Phase 1 skeleton + Phase 2 fill)."""
+
+        # Dense uses legacy prompt-schema only (no API structured output)
+        # to avoid provider-specific failures and empty/null JSON on skeleton and fill.
+        def _dense_llm(
+            prompt: dict[str, str],
+            schema_json: str,
+            context: str,
+            *,
+            response_top_level: Literal["object", "array"] = "object",
+            response_schema_name: str = "extraction",
+            **kwargs: Any,
+        ) -> dict | list | None:
+            return self._call_prompt(
+                prompt,
+                schema_json,
+                context,
+                response_top_level=response_top_level,
+                response_schema_name=response_schema_name,
+                structured_output_override=False,
+                **kwargs,
+            )
+
+        # Number this attempt's debug artifacts (first attempt keeps plain
+        # names) so a dense retry cannot overwrite the previous attempt's files.
+        self._dense_attempt_count += 1
+        self._dense_debug_suffix = (
+            "" if self._dense_attempt_count == 1 else f"_attempt{self._dense_attempt_count}"
+        )
+
+        root, run_stats, ledger = run_dense_orchestrator(
+            llm_call_fn=_dense_llm,
+            dense_config_raw=self._dense_config_raw,
+            chunks=chunks,
+            chunk_metadata=chunk_metadata,
+            full_markdown=full_markdown,
+            context=context,
+            template=template,
+            trace_data=trace_data,
+            debug_suffix=self._dense_debug_suffix,
+        )
+        self.last_dense_stats = run_stats
+        # Only a successful dense run's ledger describes the final result; on
+        # failure the strategy falls back to direct extraction.
+        self.last_provenance = ledger if root else None
+        return root
+
+    def extract_from_markdown(
+        self,
+        markdown: str,
+        template: Type[BaseModel],
+        context: str = "document",
+        is_partial: bool = False,
+        allow_dense: bool = True,
+    ) -> BaseModel | None:
+        """
+        Extract structured data from markdown content (direct mode).
+
+        This is the "power user" mode that attempts full-document extraction
+        in a single LLM call. Best-effort only, no retries or fallbacks.
+
+        Args:
+            markdown: Markdown content to extract from
+            template: Pydantic model template
+            context: Context description (e.g., "page 1", "full document")
+            is_partial: If True, use partial/chunk-based prompt
+            allow_dense: If False, never route into the dense single-chunk
+                path even when the contract is dense. Strategies set this
+                when a proper chunked dense run already failed — re-running
+                dense on the whole document as one chunk can only do worse.
+
+        Returns:
+            Extracted and validated Pydantic model instance, or None if failed
+        """
+        # Log extraction start with contract-specific prefix
+        mode = (
+            "Dense"
+            if (self.extraction_contract == "dense" and not is_partial and allow_dense)
+            else "Direct"
+        )
+        prefix = f"{mode}Extraction"
+        self._log_extraction(f"{mode} extraction from {context} ({len(markdown)} chars)", prefix)
+
+        # Early validation for empty markdown
+        if not markdown or len(markdown.strip()) == 0:
+            self._log_error(f"Markdown is empty for {context}. Cannot proceed.")
+            return None
+
+        # Full-document calls that arithmetically cannot fit the context
+        # window are refused up front instead of burning provider calls.
+        if not is_partial and not self._preflight_fits_context(markdown, context):
+            return None
+
+        # For direct full-document extraction, warn if the document is too large
+        # to fit a single response and suggest the dense contract instead.
+        if not is_partial:
+            self._maybe_hint_dense_for_large_direct(markdown)
+
+        # Get cached schema JSON
+        schema_json = self._get_schema_json(template)
+        schema_dict = self._get_schema_dict(template)
+
+        self._log_extraction("Calling LLM...", prefix)
+
+        # Call LLM
+        parsed_json = self._call_llm_for_extraction(
+            markdown=markdown,
+            schema_json=schema_json,
+            schema_dict=schema_dict,
+            is_partial=is_partial,
+            context=context,
+            template=template,
+            allow_dense=allow_dense,
+        )
+
+        if not parsed_json:
+            return None
+
+        # Validate
+        model = self._validate_extraction(parsed_json, template, context)
+
+        # Direct contract grounding (spec §5): the whole document is extracted
+        # in one call with no per-node chunk tracking, so provenance is
+        # document-level. Only for the pure direct contract ("auto" reaches
+        # this path exactly when it resolved to a direct-style single call) —
+        # dense sets its own (chunk-level) ledger, and partial/chunk calls are
+        # not full documents.
+        if (
+            model is not None
+            and not is_partial
+            and self.extraction_contract in ("direct", "auto")
+            and str(self._dense_config_raw.get("provenance", "standard")).lower() != "off"
+        ):
+            from ....core.provenance.models import document_level_ledger
+
+            self.last_provenance = document_level_ledger(markdown)
+        return model
+
+    def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int | None = None,
+    ) -> Any:
+        """
+        Generate a text response from the LLM for consolidation.
+
+        This method is used by LLM consolidation to generate patches.
+        It returns a simple response object with a 'text' attribute.
+
+        Args:
+            system_prompt: System prompt for the LLM
+            user_prompt: User prompt for the LLM
+            max_tokens: Maximum tokens to generate (optional)
+
+        Returns:
+            Response object with 'text' attribute containing the LLM's response
+        """
+        # Build prompt dictionary
+        prompt = {
+            "system": system_prompt,
+            "user": user_prompt,
+        }
+
+        # Call the LLM client
+        # Note: We're using get_json_response but the consolidation prompt
+        # should guide the LLM to return JSON format
+        try:
+            response = self.client.get_json_response(
+                prompt=prompt,
+                schema_json="{}",  # Empty schema for free-form response
+                structured_output=False,
+            )
+
+            # Wrap response in an object with 'text' attribute
+            class Response:
+                def __init__(self, data: Any) -> None:
+                    if isinstance(data, dict):
+                        self.text = json.dumps(data)
+                    elif isinstance(data, str):
+                        self.text = data
+                    else:
+                        self.text = str(data)
+
+            return Response(response)
+
+        except Exception as e:
+            logger.error("Error in generate: %s", e)
+
+            # Return empty response on error
+            class EmptyResponse:
+                text = "{}"
+
+            return EmptyResponse()
+
+    def cleanup(self, collect: bool = True) -> None:
+        """
+        Clean up LLM client resources.
+
+        Note: Most LLM clients use stateless HTTP APIs and don't require cleanup.
+        This method is provided for consistency with VlmBackend and handles any
+        clients that may have cleanup methods.
+
+        Args:
+            collect: Run a full ``gc.collect()`` after releasing resources.
+                Long-lived services pass False (via ``PipelineConfig.gc_collect``)
+                to avoid the per-run stop-the-world pause.
+        """
+        try:
+            # Release the client reference
+            if hasattr(self, "client"):
+                # If the client has its own cleanup method, call it
+                # Use getattr to avoid type checker issues with protocol
+                cleanup_fn = getattr(self.client, "cleanup", None)
+                if callable(cleanup_fn):
+                    cleanup_fn()
+                del self.client
+
+            if collect:
+                gc.collect()
+
+            logger.info("Cleaned up resources")
+
+        except Exception as e:
+            logger.warning("Warning during cleanup: %s", e)

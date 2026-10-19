@@ -8,7 +8,7 @@ from typing import Dict, List, Any, Tuple
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from hybrid_rag.config import settings
-from hybrid_rag.core.chunk_schema import normalize_page
+from hybrid_rag.core.chunk_schema import is_sheet, normalize_page
 from hybrid_rag.core.tokenizer import get_tokenizer
 import logging
 
@@ -192,6 +192,10 @@ def extract_leading_trailing_from_content_list(
     di item itu, sehingga ikut tersimpan ke ``full_docs.multimodal_items`` dan
     tetap ada saat tahap analisis berjalan dari database (dokumen yang
     di-resume atau di-retry tidak pernah melewati insert lagi).
+
+    Untuk item di sheet Excel, konteks hanya diambil dari sheet yang sama: tanpa
+    batas ini, URL sheet tetangga ikut terbaca LLM analisis tabel dan bisa
+    tertulis ke analisis tabel yang salah.
     """
     if not content_list or current_index is None:
         return "", ""
@@ -204,11 +208,16 @@ def extract_leading_trailing_from_content_list(
     if idx < 0 or idx >= len(content_list):
         return "", ""
 
+    page = normalize_page(content_list[idx].get("page_idx"))
+    sheet = page if is_sheet(page) else None  # halaman PDF tetap boleh lintas
+
     def texts(positions) -> List[str]:
         out = []
         for pos in positions:
             item = content_list[pos]
             if not isinstance(item, dict) or item.get("type", "text") != "text":
+                continue
+            if sheet and normalize_page(item.get("page_idx")) != sheet:
                 continue
             text = str(item.get("text", "") or "").strip()
             if text:

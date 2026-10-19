@@ -19,6 +19,7 @@ from typing import Any
 from hybrid_rag.core.constants import GRAPH_FIELD_SEP
 from hybrid_rag.core.source_ids import make_relation_chunk_key, subtract_source_ids
 from hybrid_rag.core.utils import compute_mdhash_id
+from hybrid_rag.ingestion.knowledge_graph.entity_resolution import _MULTIMODAL_TYPES, type_key
 from hybrid_rag.ingestion.knowledge_graph.extraction import rebuild_knowledge_from_chunks
 
 logger = logging.getLogger(__name__)
@@ -140,6 +141,42 @@ class _PurgeMixin:
                 )
         await asyncio.gather(*writes)
         return residual_edges
+
+    async def _prune_isolated_entities(self, doc_ids: list[str]) -> set[str]:
+        """Delete the entities of ``doc_ids`` that ended the batch with no relationship.
+
+        Runs once the whole batch is merged: an entity unlinked within one chunk
+        or document may still be linked by another, and a concurrent merge could
+        otherwise be adding an edge to a node being deleted. Multimodal anchors
+        (image/table/equation) stay — they are how figures are found. The text
+        that mentioned a pruned entity stays searchable from its chunk.
+        """
+        rows = await self.full_entities.get_by_ids(doc_ids) if doc_ids else []
+        names = sorted({n for row in rows if row for n in row.get("entity_names") or []})
+        if not names:
+            return set()
+        graph = self.chunk_entity_relation_graph
+        degrees = await graph.node_degrees_batch(names)
+        unlinked = [n for n, degree in degrees.items() if degree == 0]
+        nodes = await graph.get_nodes_batch(unlinked) if unlinked else {}
+        isolated = {
+            n for n, node in nodes.items()
+            if type_key(node.get("entity_type", "")) not in _MULTIMODAL_TYPES
+        }
+        if not isolated:
+            return set()
+
+        await self._remove_entities(isolated)
+        updated = {}
+        for doc_id, row in zip(doc_ids, rows):
+            if row and isolated & set(row.get("entity_names") or []):
+                kept = [n for n in row["entity_names"] if n not in isolated]
+                updated[doc_id] = {**row, "entity_names": kept, "count": len(kept)}
+        if updated:
+            await self.full_entities.upsert(updated)
+        await self._insert_done()
+        logger.info(f"[{self.workspace}] pruned {len(isolated)} isolated entities")
+        return isolated
 
     async def _chunk_ids_from_storage(self, doc_id: str) -> list[str]:
         """Ask the storages which chunks carry ``doc_id``, ignoring bookkeeping.
@@ -450,6 +487,7 @@ class _PurgeMixin:
                     entity_chunks_storage=self.entity_chunks,
                     relation_chunks_storage=self.relation_chunks,
                     doc_status_storage=self.doc_status,
+                    entity_resolver=self.entity_resolver,
                 )
             except Exception as e:
                 logger.error(f"[purge] Failed to rebuild knowledge from chunks: {e}")

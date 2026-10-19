@@ -71,8 +71,6 @@ class RagSettings(BaseSettings):
     trailing_context_tokens: int = Field(default=500, validation_alias="TRAILING_CONTEXT_TOKENS")
     max_gleaning: int = Field(default=1, validation_alias="MAX_GLEANING")
     max_extract_input_tokens: int = Field(default=20480, validation_alias="MAX_EXTRACT_INPUT_TOKENS")
-    max_extraction_records: int = Field(default=100, validation_alias="MAX_EXTRACTION_RECORDS")
-    max_extraction_entities: int = Field(default=40, validation_alias="MAX_EXTRACTION_ENTITIES")
     force_llm_summary_on_merge: int = Field(default=8, validation_alias="FORCE_LLM_SUMMARY_ON_MERGE")
     summary_max_tokens: int = Field(default=1200, validation_alias="SUMMARY_MAX_TOKENS")
     summary_context_size: int = Field(default=12000, validation_alias="SUMMARY_CONTEXT_SIZE")

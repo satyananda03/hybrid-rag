@@ -19,3 +19,6 @@ examples/test1.*
 examples/hasil_parsing_full.*
 examples/output.json
 examples/extracted_images/
+
+# entity dedup benchmark output (contains corpus entity names)
+evaluation/results/

@@ -28,6 +28,10 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import Runnable
 from hybrid_rag import providers
 from hybrid_rag.config import NOVA_MODELS, settings
+from hybrid_rag.ingestion.knowledge_graph.entity_repairment import (
+    OntologyOrphanRepairOutput,
+    OrphanRepairOutput,
+)
 from hybrid_rag.ingestion.knowledge_graph.ontology_schema import (
     load_ontology_schema,
     render_schema_for_prompt,
@@ -63,6 +67,8 @@ class KGChains(NamedTuple):
     extraction_chain: Runnable
     gleaning_prompt: ChatPromptTemplate
     gleaning_chain: Runnable
+    #: Asks only for relationships of entities the earlier passes left unlinked.
+    repair_chain: Runnable
     section_context: str
     #: The ontology's GraphSchema, which extraction prunes against; None when the
     #: document has no ontology (the default contract, no validation).
@@ -95,9 +101,11 @@ def _build_chains(ontology: str | None) -> KGChains:
     extraction = _prompt("entity_extraction")
     schema = None
     output_model = EntityExtractionOutput
+    repair_output = OrphanRepairOutput
     if ontology:
         schema = load_ontology_schema(ontology)
         output_model = OntologyExtractionOutput
+        repair_output = OntologyOrphanRepairOutput
         extraction = {
             **extraction,
             "system_prompt": _prompt("ontology_entity_extraction")["system_prompt"].replace(
@@ -130,6 +138,10 @@ def _build_chains(ontology: str | None) -> KGChains:
         ]
     )
 
+    repair_prompt = ChatPromptTemplate.from_messages(
+        [("system", system), ("human", _prompt("orphan_relation_repair")["user_prompt"])]
+    )
+
     return KGChains(
         extraction_prompt=extraction_prompt,
         extraction_chain=cached_chain(
@@ -145,6 +157,13 @@ def _build_chains(ontology: str | None) -> KGChains:
             _extract_llm(output_model),
             cache_type="extract",
             output_model=output_model,
+            model_id=settings.extract_llm_model,
+        ),
+        repair_chain=cached_chain(
+            repair_prompt,
+            _extract_llm(repair_output),
+            cache_type="extract",
+            output_model=repair_output,
             model_id=settings.extract_llm_model,
         ),
         # Injected into the extraction user prompt when the chunk carries a heading
