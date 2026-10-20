@@ -490,6 +490,7 @@ class IngestionRAG(
         pipeline_status_lock=None,
         ontology: str | None = None,
         orphan_repair: bool = True,
+        entity_registry: str | None = None,
         semaphore: asyncio.Semaphore | None = None,
     ) -> list:
         try:
@@ -497,7 +498,8 @@ class IngestionRAG(
                 chunk,
                 # _build_global_config() is per-RAG-instance; the extraction contract
                 # is per-document, so it rides along as an override rather than a field.
-                global_config={**self._build_global_config(), "kg_ontology": ontology, "orphan_repair": orphan_repair},
+                global_config={**self._build_global_config(), "kg_ontology": ontology, "orphan_repair": orphan_repair,
+                               "kg_entity_registry": entity_registry},
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,

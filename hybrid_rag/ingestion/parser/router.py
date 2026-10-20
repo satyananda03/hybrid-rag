@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import AsyncIterator
 import logging
 from hybrid_rag import progress
+from hybrid_rag.ingestion.knowledge_graph.entity_resolution import load_entity_registry
 from hybrid_rag.ingestion.parser.figures import fit_figures, host_figures
 from hybrid_rag.ingestion.parser.office.office_to_pdf import SUPPORTED_EXTENSIONS as OFFICE_EXTENSIONS, convert_office_to_pdf
 from hybrid_rag.ingestion.parser.pdf.amazon_textract import parse_document_to_json, reconstruct_content_list
@@ -34,31 +35,31 @@ def _read_content_list(path: Path) -> list[dict]:
         )
     return data
 
-async def _parse_pdf(path: Path, tmp_dir: Path, slides: bool = False) -> list[dict]:
+async def _parse_pdf(path: Path, tmp_dir: Path, entity_registry: str | None = None, slides: bool = False) -> list[dict]:
     """Dek slide → VLM per slide; selain itu Textract (TEXTRACT_MODE: async/sync), lalu content list dari blocks."""
     if slides or is_slide_deck(path):
-        return await parse_slides(path, tmp_dir)
+        return await parse_slides(path, tmp_dir, entity_registry)
     raw_parse = await parse_document_to_json(str(path), output_file=str(tmp_dir / "raw_parsing_result.json"))
     return await asyncio.to_thread(
         reconstruct_content_list, raw_parse, output_file=str(tmp_dir / "formatted_parsing_result.json")
     )
 
-async def _parse_office(path: Path, tmp_dir: Path) -> list[dict]:
+async def _parse_office(path: Path, tmp_dir: Path, entity_registry: str | None = None) -> list[dict]:
     """docx/pptx/… → PDF lewat unoserver, lalu jalur PDF. pptx selalu dek slide, apa pun rasio halamannya
     (``is_slide_deck`` hanya mengenali 16:9/16:10). PDF dipindah ke ``tmp_dir`` agar ikut dibersihkan."""
     converted = Path(await convert_office_to_pdf(str(path)))
     pdf = tmp_dir / converted.name
     shutil.move(converted, pdf)
     shutil.rmtree(converted.parent, ignore_errors=True)
-    return await _parse_pdf(pdf, tmp_dir, slides=path.suffix.lower() == ".pptx")
+    return await _parse_pdf(pdf, tmp_dir, entity_registry, slides=path.suffix.lower() == ".pptx")
 
-async def _parse_xlsx(path: Path, tmp_dir: Path) -> list[dict]:
+async def _parse_xlsx(path: Path, tmp_dir: Path, entity_registry: str | None = None) -> list[dict]:
     return await asyncio.to_thread(parse_xlsx, path, tmp_dir / "images")
 
-async def _read_text(path: Path, tmp_dir: Path) -> list[dict]:
+async def _read_text(path: Path, tmp_dir: Path, entity_registry: str | None = None) -> list[dict]:
     return await asyncio.to_thread(_read_text_document, path)
 
-async def _read_prebuilt(path: Path, tmp_dir: Path) -> list[dict]:
+async def _read_prebuilt(path: Path, tmp_dir: Path, entity_registry: str | None = None) -> list[dict]:
     """A content list that is already the parser's output (``notion_sync``): nothing to parse,
     only its images brought under the VLM limits like every parser's figures."""
     content_list = await asyncio.to_thread(_read_content_list, path)
@@ -77,8 +78,12 @@ PARSERS = {
 SUPPORTED_INGEST_EXTENSIONS = frozenset(PARSERS)
 
 @asynccontextmanager
-async def parse_file(file_path: str | Path) -> AsyncIterator[list[dict]]:
-    """Parse one file into a content list, ready for ``rag.insert_content_list``"""
+async def parse_file(file_path: str | Path, entity_registry: str | None = None) -> AsyncIterator[list[dict]]:
+    """Parse one file into a content list, ready for ``rag.insert_content_list``.
+
+    ``entity_registry``: pass the same registry as to ``insert_content_list``. Parsing runs
+    before the insert, so this is the only way slide transcription gets its acronyms.
+    """
     path = Path(file_path).expanduser().resolve()
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
@@ -90,6 +95,8 @@ async def parse_file(file_path: str | Path) -> AsyncIterator[list[dict]]:
             f"Didukung: {', '.join('.' + e for e in sorted(PARSERS))}"
         )
     parser, has_local_figures = PARSERS[ext]
+    if entity_registry:
+        load_entity_registry(entity_registry)  # a typo fails here, not after the VLM has run
 
     logger.info(f"[parse] starting file={path.name}")
 
@@ -97,7 +104,7 @@ async def parse_file(file_path: str | Path) -> AsyncIterator[list[dict]]:
 
     try:
         progress.stage("parse")
-        content_list = await parser(path, tmp_dir)
+        content_list = await parser(path, tmp_dir, entity_registry)
         if has_local_figures:
             await asyncio.to_thread(host_figures, content_list)
 

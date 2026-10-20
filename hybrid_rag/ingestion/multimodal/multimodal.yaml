@@ -152,6 +152,7 @@ slide_transcription:
     {reference_text}
     </reference_text>
     {style_groups}
+    {glossary}
 
 # Injected as {context_block} when the item has neighbouring text; rendered to an empty string when it does not.
 surrounding_context:

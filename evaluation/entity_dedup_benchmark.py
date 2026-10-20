@@ -1,9 +1,9 @@
-"""Entity deduplication benchmark on the raw corpus in data/ (no labels yet).
+"""Entity deduplication benchmark on the raw corpus in examples/data/ (no labels yet).
 
     uv run --extra ingestion python evaluation/entity_dedup_benchmark.py ingest [--entity-registry iccn]
     uv run --extra ingestion python evaluation/entity_dedup_benchmark.py report
 
-ingest  parses every file of data/ and ingests it into one workspace
+ingest  parses every file of examples/data/ and ingests it into one workspace
         (default workspace_entity_test) with entity resolution on.
 report  measures what resolution did and what it left:
         - nodes now vs. without resolution (nodes + names the registry rewrote);
@@ -129,7 +129,7 @@ async def ingest(workspace: str, data_dir: Path, entity_registry: str | None) ->
         for i, path in enumerate(files, start=1):
             print(f"[{i}/{len(files)}] {path.name}")
             try:
-                async with parse_file(path) as content_list:
+                async with parse_file(path, entity_registry=entity_registry) as content_list:
                     await rag.insert_content_list(
                         content_list, file_path=str(path), entity_registry=entity_registry
                     )
@@ -553,8 +553,9 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=["ingest", "report", "candidates", "evaluate"])
     parser.add_argument("--workspace", default="workspace_entity_test")
-    parser.add_argument("--data", type=Path, default=ROOT / "data")
-    parser.add_argument("--entity-registry", default=None, help="YAML in knowledge_graph/entity_registry/")
+    parser.add_argument("--data", type=Path, default=ROOT / "examples" / "data")
+    parser.add_argument("--entity-registry", default=None,
+                        help="YAML in knowledge_graph/entity_registry/; used by both parse_file and insert_content_list")
     parser.add_argument("--no-llm", action="store_true", help="evaluate: replay the rules only")
     parser.add_argument("--embed-min", type=float, default=None,
                         help="evaluate: override EMBED_MIN_SIMILARITY for a calibration run")

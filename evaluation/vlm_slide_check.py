@@ -1,6 +1,6 @@
 """Ingest one slide-deck PDF and keep the VLM transcription of every slide for manual review.
 
-    uv run --extra ingestion python evaluation/vlm_slide_check.py <pdf> <workspace> [--no-insert]
+    uv run --extra ingestion python evaluation/vlm_slide_check.py <pdf> <workspace> [--no-insert] [--entity-registry iccn]
 
 Writes evaluation/results/vlm_slides_<stem>.json (one item per slide: page, text, coverage of the
 PDF text layer) before inserting, so the transcripts survive a failed insert.
@@ -13,11 +13,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+RESULTS = ROOT / "evaluation" / "results"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "evaluation"))
 
 
-async def main(pdf: Path, workspace: str, insert: bool) -> None:
+async def main(pdf: Path, workspace: str, insert: bool, entity_registry: str | None = None) -> None:
     import logging
 
     import pymupdf
@@ -31,8 +32,9 @@ async def main(pdf: Path, workspace: str, insert: bool) -> None:
     with pymupdf.open(pdf) as doc:
         references = [page.get_text(sort=True).strip() for page in doc]
 
-    out = ROOT / "evaluation" / "results" / f"vlm_slides_{pdf.stem}.json"
-    async with parse_file(pdf) as content_list:
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    out = RESULTS / f"vlm_slides_{pdf.stem}.json"
+    async with parse_file(pdf, entity_registry=entity_registry) as content_list:
         slides = [
             {"page": item["page_idx"] + 1, "coverage": round(_coverage(references[item["page_idx"]], item["text"]), 3),
              "text": item["text"]}
@@ -42,7 +44,8 @@ async def main(pdf: Path, workspace: str, insert: bool) -> None:
         print(f"{len(slides)} slide → {out}")
         if insert:
             async with workspace_pool.lease(workspace) as rag:
-                await rag.insert_content_list(content_list, file_path=pdf, doc_id=f"doc-{pdf.stem}", save_parent=True)
+                await rag.insert_content_list(content_list, file_path=pdf, doc_id=f"doc-{pdf.stem}", save_parent=True,
+                                              entity_registry=entity_registry)
 
 
 if __name__ == "__main__":
@@ -50,5 +53,7 @@ if __name__ == "__main__":
     p.add_argument("pdf", type=Path)
     p.add_argument("workspace")
     p.add_argument("--no-insert", action="store_true")
+    p.add_argument("--entity-registry", default=None,
+                   help="YAML in knowledge_graph/entity_registry/; used by both parse_file and insert_content_list")
     a = p.parse_args()
-    asyncio.run(main(a.pdf.resolve(), a.workspace, not a.no_insert))
+    asyncio.run(main(a.pdf.resolve(), a.workspace, not a.no_insert, a.entity_registry))

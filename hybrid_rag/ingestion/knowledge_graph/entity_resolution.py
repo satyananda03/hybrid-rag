@@ -65,7 +65,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 REGISTRY_DIR = Path(__file__).parent / "entity_registry"
-MAX_ALIASES = 10  # names kept on a node / in its VDB text; more only dilutes the embedding
+MAX_ALIASES = 10
 
 # Sidecar/multimodal entities are named by the multimodal pipeline, which also writes their nodes and belongs_to edges itself: renaming them would orphan those.
 _MULTIMODAL_TYPES = frozenset({"drawing", "table", "equation", "image"})
@@ -143,6 +143,9 @@ class DomainRegistry:
     name: str # (type_key or "*", match_key) -> canonical display name
     aliases: dict[tuple[str, str], str] # pairs of entity_key that must never share a node
     never_merge: frozenset[frozenset[str]]
+    # One-word aliases with their canonical name ("ICCN", "Indonesia Creative Cities Network"): the
+    # glossary every LLM that writes text is given, so it never invents a full form.
+    acronyms: tuple[tuple[str, str], ...] = ()
 
 def resolve_registry_path(name: str) -> Path:
     """``"iccn"`` or ``"iccn.yaml"`` -> a file in ``entity_registry/``; unknown names fail loudly."""
@@ -163,9 +166,11 @@ def load_entity_registry(name: str) -> DomainRegistry:
 def _load_registry(path: Path) -> DomainRegistry:
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     aliases: dict[tuple[str, str], str] = {}
+    acronyms: dict[str, str] = {}
     def add(scope: str, entries: list[dict[str, Any]] | None) -> None:
         for entry in entries or []:
             canonical = str(entry["canonical"]).strip()
+            acronyms.update((str(a).strip(), canonical) for a in entry.get("aliases") or [] if " " not in str(a).strip())
             for alias in [canonical, *(entry.get("aliases") or [])]:
                 key = match_key(str(alias))
                 if not key:
@@ -181,9 +186,32 @@ def _load_registry(path: Path) -> DomainRegistry:
         frozenset(entity_key(str(n)) for n in pair) for pair in raw.get("never_merge") or []
     )
     logger.info(f"entity registry {path.name}: {len(aliases)} alias keys, {len(never_merge)} never_merge pairs")
-    return DomainRegistry(path.stem, aliases, never_merge)
+    return DomainRegistry(path.stem, aliases, never_merge, tuple(acronyms.items()))
 
 _NO_DOMAIN = DomainRegistry("", {}, frozenset())
+
+def acronym_glossary(registry: str | None, text: str) -> str:
+    """Prompt line naming the registry acronyms ``text`` mentions; "" without a registry or a mention.
+
+    Every LLM that writes stored text (contextualize, extraction, summaries, table, image and
+    slide analysis) gets it: asked to situate "ICCN", a model writes "Indonesia Corruption
+    Community Network" (18 of 18 chunks of the ICCN network spreadsheets), and a rule alone
+    ("never guess") did not stop it; the full form did. Only the acronyms in ``text`` are listed,
+    so a call that mentions none pays nothing.
+    """
+    if not registry or not text:
+        return ""
+    known = [
+        f"{alias} = {canonical}"
+        for alias, canonical in load_entity_registry(registry).acronyms
+        if re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", text, re.IGNORECASE)
+    ]
+    if not known:
+        return ""
+    return (
+        "ACRONYMS: Keep acronyms exactly as written. Expand an acronym only when its full form appears "
+        f"in the provided text; never guess one. Known acronyms in this domain: {'; '.join(known)}."
+    )
 
 # --- Postgres registry per workspace -------------------------------------------
 @dataclass(frozen=True)

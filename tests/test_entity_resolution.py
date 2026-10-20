@@ -6,6 +6,7 @@ import pytest
 
 from hybrid_rag.ingestion.knowledge_graph.entity_resolution import (
     EntityResolver,
+    acronym_glossary,
     entity_key,
     load_entity_registry,
     match_key,
@@ -79,6 +80,14 @@ def test_abbreviation_must_be_the_initials():
     assert split_long_abbr("Kota Malang (JATIM)") is None
     assert split_long_abbr("Rencana Induk (table)") is None
     assert split_long_abbr("Pasal 9 (1)") is None
+
+
+def test_acronym_glossary_lists_only_the_registry_acronyms_the_text_mentions():
+    line = acronym_glossary("iccn", "DATA JEJARING ICCN JAWA BARAT")
+    assert "ICCN = Indonesia Creative Cities Network" in line and "UCCN" not in line
+    assert "Kemenekraf = Kementerian Ekonomi Kreatif" in acronym_glossary("iccn", "tugas kemenekraf")  # any case
+    assert acronym_glossary("iccn", "ICCNX dan Kota Malang") == ""  # whole words only
+    assert acronym_glossary(None, "ICCN") == acronym_glossary("iccn", "") == ""
 
 
 def test_unknown_registry_lists_the_available_ones():

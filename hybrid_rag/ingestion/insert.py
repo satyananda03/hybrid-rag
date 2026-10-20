@@ -135,13 +135,16 @@ class _IngestionMixin:
                     registry in ``knowledge_graph/entity_registry/``: curated
                     aliases and never_merge pairs applied when this document's
                     entities are merged (see knowledge_graph.entity_resolution).
-                    None applies only the deterministic rules; an unknown file
-                    raises here.
+                    Its one-word aliases are also the acronym glossary given to
+                    contextualize, extraction, summaries and table/image analysis
+                    (pass it to ``parse_file`` too for slide decks). None applies
+                    only the deterministic rules; an unknown file raises here.
             entity_resolution: Merge this document's entity name variants into
                     canonical names before writing the graph (see
                     knowledge_graph.entity_resolution). False keeps the plain
                     exact-name merge for this document; entity_registry is then
-                    ignored.
+                    ignored for merging, while its acronym glossary still guides
+                    every LLM that writes text.
             entity_resolution_llm: Also let an LLM judge the name pairs the rules
                     cannot decide (qualifiers, typos, acronyms), comparing with
                     this workspace's existing entities. Only applies when

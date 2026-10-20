@@ -239,6 +239,7 @@ summarize_entity_descriptions:
     {description_list}
     </description_list>
     </input>
+    {glossary}
 
 # ENTITY EXTRACTOR PROMPT V1 :
 # entity_extraction:

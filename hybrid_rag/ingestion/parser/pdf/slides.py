@@ -15,6 +15,7 @@ from pathlib import Path
 import pymupdf
 
 from hybrid_rag.config import settings
+from hybrid_rag.ingestion.knowledge_graph.entity_resolution import acronym_glossary
 from hybrid_rag.ingestion.multimodal.content import encode_image_to_base64
 from hybrid_rag.ingestion.multimodal.chain import slide_transcription_chain
 from hybrid_rag.ingestion.parser.figures import FIGURE_MAX_PIXELS, save_for_vlm
@@ -86,8 +87,11 @@ def _coverage(reference: str, transcript: str) -> float:
     return len(words & found) / len(words)
 
 
-async def parse_slides(path: Path, tmp_dir: Path) -> list[dict]:
-    """Satu item ``text`` per slide, berurutan, dengan ``page_idx`` dan gambar slidenya."""
+async def parse_slides(path: Path, tmp_dir: Path, entity_registry: str | None = None) -> list[dict]:
+    """Satu item ``text`` per slide, berurutan, dengan ``page_idx`` dan gambar slidenya.
+
+    ``entity_registry`` memberi VLM kepanjangan akronim yang disebut slide (lihat ``acronym_glossary``).
+    """
     with pymupdf.open(path) as doc:
         references = [page.get_text(sort=True).strip() for page in doc]
         styles = [style_groups(page) for page in doc]
@@ -105,6 +109,7 @@ async def parse_slides(path: Path, tmp_dir: Path) -> list[dict]:
                 "page_number": page_idx + 1,
                 "reference_text": references[page_idx] or "(kosong)",
                 "style_groups": styles[page_idx],
+                "glossary": acronym_glossary(entity_registry, references[page_idx]),
                 "image_url": f"data:image/jpeg;base64,{encode_image_to_base64(str(image_path))}",
             })
         text = (text or "").strip()

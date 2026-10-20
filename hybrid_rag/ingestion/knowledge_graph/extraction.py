@@ -80,6 +80,7 @@ from hybrid_rag.ingestion.knowledge_graph.entity_repairment import (
 )
 from hybrid_rag.ingestion.knowledge_graph.entity_resolution import (
     EntityResolver,
+    acronym_glossary,
     rewrite as rewrite_entity_names,
 )
 from hybrid_rag.core.chunk_schema import _truncate_section_context
@@ -401,6 +402,7 @@ async def _summarize_descriptions(
             "description_name": description_name,
             "description_list": joined_descriptions,
             "summary_length": summary_length_recommended,
+            "glossary": acronym_glossary(global_config.get("kg_entity_registry"), joined_descriptions),
         },
         config={"configurable": {CACHE_KV: llm_response_cache}},
     )
@@ -3150,6 +3152,11 @@ async def extract_entities(
             if heading_path
             else ""
         )
+        # Before the section context, so extraction, gleaning (which replays this
+        # user prompt) and orphan repair all carry it.
+        glossary = acronym_glossary(global_config.get("kg_entity_registry"), content)
+        if glossary:
+            heading_context_block = f"{glossary}\n\n{heading_context_block}"
 
         chain_inputs = {
             "input_text": sanitize_text_for_encoding(content),

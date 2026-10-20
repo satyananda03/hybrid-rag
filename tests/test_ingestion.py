@@ -30,6 +30,7 @@ from hybrid_rag.ingestion.knowledge_graph.ontology_schema import (
 from hybrid_rag.ingestion.multimodal.content import page_offsets_of, separate_content
 from hybrid_rag.ingestion.parser import figures
 from hybrid_rag.ingestion.parser.pdf import slides
+from hybrid_rag.ingestion.knowledge_graph.entity_resolution import acronym_glossary
 from hybrid_rag.ingestion.parser.spreadsheet.parser import parse_xlsx
 from hybrid_rag.ingestion.parser.figures import FIGURE_MAX_PIXELS, cap_image_size, save_for_vlm
 from hybrid_rag.storage.s3 import objects as s3_objects
@@ -109,7 +110,7 @@ def test_office_files_are_converted_then_take_the_pdf_route(tmp_path, monkeypatc
     async def fake_textract(path, output_file):
         seen["textract"] = Path(path)
         return {}
-    async def fake_slides(path, tmp_dir):
+    async def fake_slides(path, tmp_dir, entity_registry=None):
         seen["slides"] = path
         return [{"type": "text", "text": "slide", "page_idx": 0}]
     monkeypatch.setattr(router, "convert_office_to_pdf", fake_convert)
@@ -499,10 +500,67 @@ def test_slide_prompt_renders_with_the_inputs_parse_slides_sends():
 
     messages = _chat_prompt("slide_transcription", with_image=True).format_messages(
         page_number=3, reference_text="Teks", style_groups="<style_groups>\ntebal: A\n</style_groups>",
-        image_url="data:image/jpeg;base64,AA==",
+        glossary=acronym_glossary("iccn", "ICCN"), image_url="data:image/jpeg;base64,AA==",
     )
     text = messages[1].content[0]["text"]
-    assert "Transcribe slide 3" in text and "tebal: A" in text and "{" not in text
+    assert "Transcribe slide 3" in text and "tebal: A" in text and "ICCN = Indonesia" in text and "{" not in text
+
+
+def test_slides_get_the_acronyms_their_text_layer_mentions(tmp_path, monkeypatch):
+    doc = pymupdf.open()
+    doc.new_page(width=1440, height=810).insert_text((20, 40), "DATA JEJARING ICCN")
+    doc.new_page(width=1440, height=810).insert_text((20, 40), "Timeline Ekraf")
+    doc.save(tmp_path / "a.pdf")
+    chain = FakeSlideChain()
+    monkeypatch.setattr(slides, "slide_transcription_chain", lambda: chain)
+    asyncio.run(slides.parse_slides(tmp_path / "a.pdf", tmp_path, "iccn"))
+    by_page = {c["page_number"]: c["glossary"] for c in chain.calls}
+    assert "ICCN = Indonesia Creative Cities Network" in by_page[1] and by_page[2] == ""
+
+
+def test_contextualize_gets_the_acronyms_of_the_parent(monkeypatch):
+    from hybrid_rag.ingestion.chunking import parent_child
+
+    seen = []
+    class Chain:
+        async def ainvoke(self, inputs):
+            seen.append(inputs["glossary"])
+            return "konteks"
+    monkeypatch.setattr(parent_child, "contextualize_chain", lambda: Chain())
+    parents = [{"content": "DATA JEJARING ICCN BANTEN"}, {"content": "tanpa akronim"}]
+    children = [{"content": "a", "parent_index": 0, "chunk_order_index": 0},
+                {"content": "b", "parent_index": 1, "chunk_order_index": 1}]
+    asyncio.run(parent_child.contextualize_children(parents, children, entity_registry="iccn"))
+    assert "ICCN = Indonesia Creative Cities Network" in seen[0] and seen[1] == ""
+    asyncio.run(parent_child.contextualize_children(parents, children))
+    assert seen[2:] == ["", ""]
+
+
+def test_table_and_image_context_carries_the_document_acronyms():
+    from hybrid_rag.ingestion.multimodal.base_processor import BaseModalProcessor
+
+    block = BaseModalProcessor._context_block(None, {"table_body": "| ICCN | 3 |", "_entity_registry": "iccn"})
+    assert block == acronym_glossary("iccn", "ICCN") and block
+    assert BaseModalProcessor._context_block(None, {"table_body": "| ICCN | 3 |"}) == ""
+
+
+def test_summary_prompt_renders_with_and_without_a_glossary():
+    from hybrid_rag.ingestion.knowledge_graph.chain import _prompt
+
+    template = _prompt("summarize_entity_descriptions")["user_prompt"]
+    args = dict(description_type="Entity", description_name="ICCN", description_list="{}", summary_length=100)
+    assert "ICCN = Indonesia" in template.format(**args, glossary=acronym_glossary("iccn", "ICCN"))
+    assert "{" not in template.format(**args, glossary="").replace('{}', '')
+
+
+def test_parse_file_rejects_an_unknown_entity_registry(tmp_path):
+    md = tmp_path / "a.md"
+    md.write_text("ICCN", encoding="utf-8")
+    async def go():
+        async with router.parse_file(md, entity_registry="tidak-ada"):
+            pass
+    with pytest.raises(FileNotFoundError, match="iccn"):
+        asyncio.run(go())
 
 
 def test_an_empty_transcription_fails_the_document(tmp_path, monkeypatch):
@@ -520,7 +578,7 @@ def test_coverage_counts_text_layer_words_in_the_transcript():
 def test_slide_decks_skip_textract_and_are_hosted(tmp_path, monkeypatch, hosted):
     async def fake_textract(path, output_file):
         raise AssertionError("dek slide tidak boleh ke Textract")
-    async def fake_slides(path, tmp_dir):
+    async def fake_slides(path, tmp_dir, entity_registry=None):
         return [{"type": "text", "text": "slide", "page_idx": 0, "img_path": str(tmp_dir / "slide_0.jpg")}]
     monkeypatch.setattr(router, "parse_document_to_json", fake_textract)
     monkeypatch.setattr(router, "parse_slides", fake_slides)

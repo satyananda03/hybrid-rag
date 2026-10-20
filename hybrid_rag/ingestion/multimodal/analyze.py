@@ -191,7 +191,7 @@ class _AnalyzeMixin:
                     description, entity_info = await retry_invalid_output_once(
                         partial(
                             processor.generate_description_only,
-                            modal_content=item,
+                            modal_content={**item, "_entity_registry": doc_metadata.get("kg_entity_registry")},
                             content_type=content_type,
                             item_info=item_info,
                             entity_name=None,  # Let LLM auto-generate
@@ -258,6 +258,7 @@ class _AnalyzeMixin:
                 modal_chunks,
                 ontology=doc_metadata.get("kg_ontology"),
                 orphan_repair=doc_metadata.get("orphan_repair", True),
+                entity_registry=doc_metadata.get("kg_entity_registry"),
                 semaphore=extract_semaphore,
             )
         )
@@ -625,6 +626,7 @@ class _AnalyzeMixin:
         modal_chunks: Dict[str, Any],
         ontology: str | None = None,
         orphan_repair: bool = True,
+        entity_registry: str | None = None,
         semaphore: asyncio.Semaphore | None = None,
     ) -> List[Tuple]:
         """Extract entities and relations from modal chunks with the text pipeline's extractor."""
@@ -643,7 +645,8 @@ class _AnalyzeMixin:
         # Same extractor as the text chunks
         chunk_results = await extract_entities(
             chunks={k: {**c, "content": _NEIGHBOR_TEXT.sub("", c["content"])} for k, c in modal_chunks.items()},
-            global_config={**self._build_global_config(), "kg_ontology": ontology, "orphan_repair": orphan_repair},
+            global_config={**self._build_global_config(), "kg_ontology": ontology, "orphan_repair": orphan_repair,
+                           "kg_entity_registry": entity_registry},
             pipeline_status=pipeline_status,
             pipeline_status_lock=pipeline_status_lock,
             llm_response_cache=self.llm_response_cache,

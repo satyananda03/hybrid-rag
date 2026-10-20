@@ -15,6 +15,7 @@ from hybrid_rag.config import NOVA_MODELS, settings
 from hybrid_rag.core.chunk_schema import is_sheet
 from hybrid_rag.core.constants import GRAPH_FIELD_SEP
 from hybrid_rag.core.tokenizer import Tokenizer
+from hybrid_rag.ingestion.knowledge_graph.entity_resolution import acronym_glossary
 from hybrid_rag.ingestion.token_limit import _normalized_child_offsets
 from hybrid_rag.ingestion.utils import raise_first_failure
 import logging
@@ -231,6 +232,7 @@ CONTEXTUALIZE_SYSTEM_PROMPT = """
 CONTEXTUALIZE_USER_TEMPLATE = (
     "Here is the chunk we want to situate within the whole document:\n"
     "<chunk>\n{child_content}\n</chunk>\n\n"
+    "{glossary}\n\n"
     "Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. Answer only with the succinct context and nothing else."
 )
 
@@ -290,6 +292,7 @@ async def contextualize_children(
     *,
     max_concurrent: int | None = None,
     on_contextualized: Callable[[dict[str, Any]], None] | None = None,
+    entity_registry: str | None = None,
 ) -> list[dict[str, Any]]:
     """Contextualize each child chunk using its parent as context via LLM.
 
@@ -307,6 +310,10 @@ async def contextualize_children(
     degrades every downstream answer. For the same reason a chunk whose context
     still cannot be produced after the client's retries fails the whole call
     (and with it the document) instead of falling back to its bare content.
+
+    ``entity_registry`` adds its acronyms that the parent mentions (see
+    ``acronym_glossary``); placed after the document block, so the cached
+    prefix stays the same for every child of a parent.
 
     Raises:
         ContextualizationError: a child could not be contextualized; carries
@@ -329,6 +336,7 @@ async def contextualize_children(
                     {
                         "parent_content": parent_content,
                         "child_content": child["content"],
+                        "glossary": acronym_glossary(entity_registry, parent_content),
                     }
                 )
             except Exception as e:

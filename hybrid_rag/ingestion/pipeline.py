@@ -1540,6 +1540,7 @@ class _PipelineMixin:
                 ctx.pipeline_status_lock,
                 ontology=doc_metadata.get("kg_ontology"),
                 orphan_repair=doc_metadata.get("orphan_repair", True),
+                entity_registry=doc_metadata.get("kg_entity_registry"),
                 semaphore=extract_gate,
             )
         )
@@ -1557,7 +1558,8 @@ class _PipelineMixin:
             # after the slowest child: the embedding queue is the bottleneck
             # and would otherwise sit idle through contextualize.
             chunking_result = await contextualize_children(
-                parent_result, child_result, on_contextualized=prime_child
+                parent_result, child_result, on_contextualized=prime_child,
+                entity_registry=doc_metadata.get("kg_entity_registry"),
             )
             if inspect.isawaitable(chunking_result):
                 chunking_result = await chunking_result

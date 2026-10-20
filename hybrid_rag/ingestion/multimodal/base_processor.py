@@ -25,6 +25,7 @@ from hybrid_rag.ingestion.multimodal.chain import (
     EquationAnalysis,
     surrounding_context_block,
 )
+from hybrid_rag.ingestion.knowledge_graph.entity_resolution import acronym_glossary
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +65,16 @@ class BaseModalProcessor:
         """
         if not content_data:
             return ""
-        return surrounding_context_block(
+        block = surrounding_context_block(
             content_data.get("_leading_text", ""),
             content_data.get("_trailing_text", ""),
         )
+        # Acronyms the item or its neighbours mention, from the document's registry (see acronym_glossary).
+        glossary = acronym_glossary(
+            content_data.get("_entity_registry"),
+            " ".join(str(v) for k, v in content_data.items() if k != "_entity_registry" and isinstance(v, (str, list))),
+        )
+        return "\n".join(filter(None, (block, glossary)))
 
     def _cache_config(
         self, chunk_id: str | None = None, cache_keys: list[str] | None = None

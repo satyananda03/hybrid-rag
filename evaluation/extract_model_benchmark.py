@@ -1,6 +1,6 @@
 """Compare EXTRACT_LLM_MODEL candidates on a real ingest.
 
-    uv run --extra ingestion python evaluation/extract_model_benchmark.py ingest <model> <workspace> [file ...]
+    uv run --extra ingestion python evaluation/extract_model_benchmark.py ingest <model> <workspace> [file ...] [--entity-registry iccn]
     uv run --extra ingestion python evaluation/extract_model_benchmark.py report <workspace> [<workspace> ...]
     uv run --extra ingestion python evaluation/extract_model_benchmark.py judge <ws_a> <ws_b> [--n 24] [--judge MODEL]
 
@@ -57,7 +57,7 @@ def _grounded(name: str, text_tokens: set[str]) -> bool:
     return words <= text_tokens
 
 
-async def ingest(model: str, workspace: str, files: list[str]) -> None:
+async def ingest(model: str, workspace: str, files: list[str], entity_registry: str | None = None) -> None:
     # Settings are read at import, so the model must be in the environment first.
     os.environ["EXTRACT_LLM_MODEL"] = model
     _setup()
@@ -113,8 +113,8 @@ async def ingest(model: str, workspace: str, files: list[str]) -> None:
             start = time.perf_counter()
             error = None
             try:
-                async with parse_file(data / name) as content_list:
-                    await rag.insert_content_list(content_list, file_path=name)
+                async with parse_file(data / name, entity_registry=entity_registry) as content_list:
+                    await rag.insert_content_list(content_list, file_path=name, entity_registry=entity_registry)
             except Exception as e:  # one bad file must not stop the run
                 error = f"{type(e).__name__}: {e}"[:500]
             write({"kind": "file", "seconds": time.perf_counter() - start, "error": error})
@@ -253,6 +253,8 @@ def main() -> None:
     p.add_argument("model")
     p.add_argument("workspace")
     p.add_argument("files", nargs="*", default=DEFAULT_FILES)
+    p.add_argument("--entity-registry", default=None,
+                   help="YAML in knowledge_graph/entity_registry/; used by both parse_file and insert_content_list")
     p = sub.add_parser("report")
     p.add_argument("workspaces", nargs="+")
     p = sub.add_parser("judge")
@@ -262,7 +264,7 @@ def main() -> None:
     p.add_argument("--judge", default="global.xai.grok-4.6")
     args = parser.parse_args()
     if args.cmd == "ingest":
-        asyncio.run(ingest(args.model, args.workspace, args.files))
+        asyncio.run(ingest(args.model, args.workspace, args.files, args.entity_registry))
     elif args.cmd == "report":
         asyncio.run(report(args.workspaces))
     else:
