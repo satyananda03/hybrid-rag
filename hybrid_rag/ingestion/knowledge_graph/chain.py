@@ -53,7 +53,8 @@ def _extract_llm(output_model: type = EntityExtractionOutput) -> Runnable:
     """The extraction model bound to one output schema, built on first use."""
     return providers.get_llm(
         model_id=settings.extract_llm_model,
-        max_tokens=None,  # a capped structured output is truncated JSON: 40% of extractions exceed 900 tokens
+        # A low cap truncates the JSON: 40% of extractions exceed 900 tokens, and reasoning counts too.
+        max_tokens=settings.extract_llm_max_tokens,
         temperature=0.0,
         base_url=settings.extract_llm_binding_host,
         api_key=settings.extract_llm_binding_api_key,
@@ -182,7 +183,7 @@ def _summary_chain() -> Runnable:
     """
     summary_llm = providers.get_llm(
         model_id=settings.extract_llm_model,
-        max_tokens=None,
+        max_tokens=settings.extract_llm_max_tokens,
         base_url=settings.extract_llm_binding_host,
         api_key=settings.extract_llm_binding_api_key,
         timeout=settings.extract_llm_timeout,

@@ -1,3 +1,8 @@
+### TO DO :
+1. Benchmark amazon titan text embedding v2 vs amazon nova multimodal embedding v1
+2. Benchmark amazon bedrock reranker
+3. Strategi consume link S3 gambar yang direturn saat retrieval
+
 ### Parameter Ingestion
 
 `rag.insert_content_list(content_list, file_path=..., ...)`

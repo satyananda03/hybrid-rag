@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import pymupdf
 import pytest
-from docx import Document
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XlImage
 from PIL import Image
@@ -31,7 +30,6 @@ from hybrid_rag.ingestion.knowledge_graph.ontology_schema import (
 from hybrid_rag.ingestion.multimodal.content import page_offsets_of, separate_content
 from hybrid_rag.ingestion.parser import figures
 from hybrid_rag.ingestion.parser.pdf import slides
-from hybrid_rag.ingestion.parser.office.docx import parse_docx
 from hybrid_rag.ingestion.parser.spreadsheet.parser import parse_xlsx
 from hybrid_rag.ingestion.parser.figures import FIGURE_MAX_PIXELS, cap_image_size, save_for_vlm
 from hybrid_rag.storage.s3 import objects as s3_objects
@@ -39,16 +37,6 @@ from hybrid_rag.storage.s3 import require_bucket, upload_figures_to_s3
 
 def images(items):
     return [i for i in items if i["type"] == "image"]
-
-@pytest.fixture
-def docx_path(tmp_path, make_png):
-    doc = Document()
-    doc.add_paragraph("Pengantar")
-    doc.add_picture(str(make_png("small.png", (100, 100))))
-    doc.add_picture(str(make_png("big.png", (900, 900))))
-    path = tmp_path / "a.docx"
-    doc.save(path)
-    return path
 
 @pytest.fixture
 def xlsx_path(tmp_path, make_png):
@@ -63,21 +51,15 @@ def xlsx_path(tmp_path, make_png):
     wb.save(path)
     return path
 
-def test_docx_keeps_only_large_images(docx_path, tmp_path):
-    items = parse_docx(docx_path, tmp_path / "out")
-    [image] = images(items)
-    assert Image.open(image["img_path"]).size == (900, 900)
-    assert {"type": "text", "text": "Pengantar", "page_idx": 0} in items
-
 def test_xlsx_keeps_only_large_images_and_uses_the_sheet_as_page(xlsx_path, tmp_path):
     [image] = images(parse_xlsx(xlsx_path, tmp_path / "out"))
     assert Image.open(image["img_path"]).size == (900, 900)
     assert image["page_idx"] == "Rekap"
 
-def test_figure_thresholds_come_from_settings(docx_path, tmp_path, monkeypatch):
+def test_figure_thresholds_come_from_settings(xlsx_path, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "figure_min_width_px", 0)
     monkeypatch.setattr(settings, "figure_min_height_px", 0)
-    assert len(images(parse_docx(docx_path, tmp_path / "out"))) == 2
+    assert len(images(parse_xlsx(xlsx_path, tmp_path / "out"))) == 2
 
 def test_cap_image_size_downscales_only_images_exceeding_max_pixels():
     small = Image.new("RGB", (800, 600))
@@ -102,13 +84,42 @@ def hosted(monkeypatch):
 
 def test_supported_extensions_follow_the_routing_table():
     assert router.SUPPORTED_INGEST_EXTENSIONS == frozenset(router.PARSERS)
-    assert {"pdf", "docx", "xlsx", "md", "txt", "json"} <= router.SUPPORTED_INGEST_EXTENSIONS
-    assert not {"pptx", "doc", "odt", "rtf"} & router.SUPPORTED_INGEST_EXTENSIONS
+    assert {"pdf", "docx", "pptx", "doc", "odt", "rtf", "xlsx", "md", "txt", "json"} <= router.SUPPORTED_INGEST_EXTENSIONS
 
-@pytest.mark.parametrize("name", ["a.docx", "a.xlsx"])
-def test_office_files_are_parsed_then_hosted(name, docx_path, xlsx_path, hosted):
-    content_list = parse({"a.docx": docx_path, "a.xlsx": xlsx_path}[name])
+def test_xlsx_is_parsed_natively_then_hosted(xlsx_path, hosted):
+    content_list = parse(xlsx_path)
     assert hosted == [content_list] and len(images(content_list)) == 1
+
+@pytest.mark.parametrize(
+    "name, page, route",
+    [
+        ("a.docx", (595, 842), "textract"),  # A4 portrait document
+        ("a.pptx", (1440, 810), "slides"),  # 16:9 deck
+        ("a.pptx", (1024, 768), "slides"),  # 4:3 deck: is_slide_deck says no, pptx still is a deck
+    ],
+)
+def test_office_files_are_converted_then_take_the_pdf_route(tmp_path, monkeypatch, hosted, name, page, route):
+    source = tmp_path / name
+    source.write_bytes(b"office")
+    outdir = tmp_path / "lo-out"
+    seen = {}
+    async def fake_convert(path):
+        outdir.mkdir()
+        return str(make_pdf(outdir / f"{Path(path).stem}.pdf", [page]))
+    async def fake_textract(path, output_file):
+        seen["textract"] = Path(path)
+        return {}
+    async def fake_slides(path, tmp_dir):
+        seen["slides"] = path
+        return [{"type": "text", "text": "slide", "page_idx": 0}]
+    monkeypatch.setattr(router, "convert_office_to_pdf", fake_convert)
+    monkeypatch.setattr(router, "parse_document_to_json", fake_textract)
+    monkeypatch.setattr(router, "reconstruct_content_list", lambda raw, output_file: [{"type": "text", "text": "isi"}])
+    monkeypatch.setattr(router, "parse_slides", fake_slides)
+    content_list = parse(source)
+    assert list(seen) == [route] and seen[route].suffix == ".pdf"
+    assert seen[route].parent != outdir and not outdir.exists()  # moved into tmp_dir, converter dir removed
+    assert hosted == [content_list]
 
 def test_pdf_goes_through_textract_then_hosting_and_cleans_up(tmp_path, monkeypatch, hosted):
     pdf = tmp_path / "a.pdf"
@@ -146,9 +157,9 @@ def test_parse_file_rejects_bad_input(tmp_path):
     with pytest.raises(FileNotFoundError):
         parse(tmp_path / "missing.pdf")
 
-    unsupported = tmp_path / "a.pptx"
+    unsupported = tmp_path / "a.ppt"
     unsupported.write_bytes(b"x")
-    with pytest.raises(ValueError, match=r"\.pptx tidak didukung"):
+    with pytest.raises(ValueError, match=r"\.ppt tidak didukung"):
         parse(unsupported)
 
     bad = tmp_path / "bad.json"
@@ -361,7 +372,8 @@ def test_temperature_is_forwarded_only_when_the_library_sets_it(recorded_hooks):
 
     providers.get_llm("m", base_url=None, api_key=None)
     providers.get_llm("m", base_url=None, api_key=None, temperature=0.0)
-    assert ["temperature" in kw for _, kw in recorded_hooks["llm"]] == [False, True]
+    providers.get_llm("global.xai.grok-4.6", base_url=None, api_key=None, temperature=0.0)  # rejects the field
+    assert ["temperature" in kw for _, kw in recorded_hooks["llm"]] == [False, True, False]
 
 
 def test_reranker_is_none_without_a_host_hook(monkeypatch):
@@ -462,7 +474,35 @@ def test_each_slide_becomes_a_text_item_with_its_slide_image(tmp_path, monkeypat
     ]
     assert all(Path(i["img_path"]).is_file() for i in items)
     assert chain.calls[0]["reference_text"] == "Timeline Ekraf Kemlu"
+    assert chain.calls[0]["style_groups"] == ""  # plain black text: no style block
     assert chain.calls[0]["image_url"].startswith("data:image/jpeg;base64,")
+
+
+def test_style_groups_group_coloured_and_bold_text_from_the_pdf(tmp_path):
+    doc = pymupdf.open()
+    page = doc.new_page(width=1440, height=810)
+    page.insert_text((20, 40), "4 SUBSEKTOR BARU", color=(0.07, 0.39, 0.92))
+    page.insert_text((20, 80), "Kuliner", fontname="hebo")
+    page.insert_text((20, 120), "Seni Rupa")
+    page.insert_text((20, 160), "Sulih Suara", color=(0.07, 0.39, 0.92))
+    page.insert_text((20, 200), "Catatan abu-abu", color=(0.5, 0.5, 0.5))
+    block = slides.style_groups(page)
+    assert block.startswith("<style_groups>\n") and block.endswith("\n</style_groups>")
+    assert "4 SUBSEKTOR BARU | Sulih Suara" in block.splitlines()[1]  # same colour → one line
+    assert block.splitlines()[1].startswith("warna #")
+    assert "tebal: Kuliner" in block
+    assert "Seni Rupa" not in block and "abu-abu" not in block
+
+
+def test_slide_prompt_renders_with_the_inputs_parse_slides_sends():
+    from hybrid_rag.ingestion.multimodal.chain import _chat_prompt
+
+    messages = _chat_prompt("slide_transcription", with_image=True).format_messages(
+        page_number=3, reference_text="Teks", style_groups="<style_groups>\ntebal: A\n</style_groups>",
+        image_url="data:image/jpeg;base64,AA==",
+    )
+    text = messages[1].content[0]["text"]
+    assert "Transcribe slide 3" in text and "tebal: A" in text and "{" not in text
 
 
 def test_an_empty_transcription_fails_the_document(tmp_path, monkeypatch):

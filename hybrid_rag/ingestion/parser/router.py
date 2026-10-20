@@ -8,7 +8,7 @@ from typing import AsyncIterator
 import logging
 from hybrid_rag import progress
 from hybrid_rag.ingestion.parser.figures import fit_figures, host_figures
-from hybrid_rag.ingestion.parser.office.docx import parse_docx
+from hybrid_rag.ingestion.parser.office.office_to_pdf import SUPPORTED_EXTENSIONS as OFFICE_EXTENSIONS, convert_office_to_pdf
 from hybrid_rag.ingestion.parser.pdf.amazon_textract import parse_document_to_json, reconstruct_content_list
 from hybrid_rag.ingestion.parser.pdf.slides import is_slide_deck, parse_slides
 from hybrid_rag.ingestion.parser.spreadsheet.parser import parse_xlsx
@@ -34,17 +34,23 @@ def _read_content_list(path: Path) -> list[dict]:
         )
     return data
 
-async def _parse_pdf(path: Path, tmp_dir: Path) -> list[dict]:
+async def _parse_pdf(path: Path, tmp_dir: Path, slides: bool = False) -> list[dict]:
     """Dek slide → VLM per slide; selain itu Textract (TEXTRACT_MODE: async/sync), lalu content list dari blocks."""
-    if is_slide_deck(path):
+    if slides or is_slide_deck(path):
         return await parse_slides(path, tmp_dir)
     raw_parse = await parse_document_to_json(str(path), output_file=str(tmp_dir / "raw_parsing_result.json"))
     return await asyncio.to_thread(
         reconstruct_content_list, raw_parse, output_file=str(tmp_dir / "formatted_parsing_result.json")
     )
 
-async def _parse_docx(path: Path, tmp_dir: Path) -> list[dict]:
-    return await asyncio.to_thread(parse_docx, path, tmp_dir / "images")
+async def _parse_office(path: Path, tmp_dir: Path) -> list[dict]:
+    """docx/pptx/… → PDF lewat unoserver, lalu jalur PDF. pptx selalu dek slide, apa pun rasio halamannya
+    (``is_slide_deck`` hanya mengenali 16:9/16:10). PDF dipindah ke ``tmp_dir`` agar ikut dibersihkan."""
+    converted = Path(await convert_office_to_pdf(str(path)))
+    pdf = tmp_dir / converted.name
+    shutil.move(converted, pdf)
+    shutil.rmtree(converted.parent, ignore_errors=True)
+    return await _parse_pdf(pdf, tmp_dir, slides=path.suffix.lower() == ".pptx")
 
 async def _parse_xlsx(path: Path, tmp_dir: Path) -> list[dict]:
     return await asyncio.to_thread(parse_xlsx, path, tmp_dir / "images")
@@ -61,7 +67,7 @@ async def _read_prebuilt(path: Path, tmp_dir: Path) -> list[dict]:
 
 PARSERS = {
     "pdf": (_parse_pdf, True),
-    "docx": (_parse_docx, True),
+    **{ext: (_parse_office, True) for ext in OFFICE_EXTENSIONS},
     "xlsx": (_parse_xlsx, True),
     "md": (_read_text, False),
     "markdown": (_read_text, False),

@@ -628,6 +628,7 @@ ingestion = [
     { name = "pymupdf" },
     { name = "rapidfuzz" },
     { name = "rdflib" },
+    { name = "unoserver" },
     { name = "unstructured", extra = ["docx", "xlsx"] },
 ]
 
@@ -666,6 +667,7 @@ requires-dist = [
     { name = "sastrawi", specifier = ">=1.0.1" },
     { name = "tenacity" },
     { name = "tiktoken" },
+    { name = "unoserver", marker = "extra == 'ingestion'", specifier = "==3.4" },
     { name = "unstructured", extras = ["docx", "xlsx"], marker = "extra == 'ingestion'", specifier = ">=0.27.25" },
 ]
 provides-extras = ["ingestion", "dashboard"]
@@ -2662,6 +2664,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d9/68/f1b440335057bfce71b6e50a9d09445aa2ecbd08359a337976627b8409e7/tzdata-2026.5.tar.gz", hash = "sha256:8cc73c0a0bfca7dbfa59235d60b2eff82231dee33f53d206db1acd9173cfc0a7", size = 200404, upload-time = "2026-10-03T09:23:14.143Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/94/21/1e5995a1c920cce14e4bffae20c665ec10e7ed03ab25e006cd741092b718/tzdata-2026.5-py2.py3-none-any.whl", hash = "sha256:b683bd1b6659ddcd810ff02ad09ba821d4bf1065072805063eb35c49617905ac", size = 347996, upload-time = "2026-10-03T09:23:12.535Z" },
+]
+
+[[package]]
+name = "unoserver"
+version = "3.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/eb/4d/1bdb4f4a8c7fa128a5ca047672d5760228bafc290f2d5ce8cd46d4d1658a/unoserver-3.4.tar.gz", hash = "sha256:3dcf2204013def1d1ddd3671f38b11346bdf349fef9728277462666a8a634419", size = 80101, upload-time = "2025-09-26T14:27:55.15Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c1/62/4737a8ef62b985d8c6670c1b2152bd0d47d828174e6b7b1ebde602a7699a/unoserver-3.4-py3-none-any.whl", hash = "sha256:64c24d33d4f65d680a2d9f676518cb28e7fd6c1f9d9a745c33e4a4cb59afdfcd", size = 24601, upload-time = "2025-09-26T14:27:52.663Z" },
 ]
 
 [[package]]

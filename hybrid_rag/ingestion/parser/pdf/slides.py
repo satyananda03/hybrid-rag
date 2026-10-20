@@ -47,6 +47,36 @@ def is_slide_deck(path: str | Path) -> bool:
         return wide / doc.page_count >= SLIDE_MIN_SHARE
 
 
+def _gray(color: int) -> bool:
+    r, g, b = color >> 16 & 255, color >> 8 & 255, color & 255
+    return max(r, g, b) - min(r, g, b) < 24
+
+
+def style_groups(page: pymupdf.Page) -> str:
+    """Blok ``<style_groups>``: teks slide dikelompokkan per gaya non-default (warna non-abu, lalu tebal).
+
+    VLM melihat warna dan tebal dengan benar, tetapi sering salah memasangkan judul
+    kelompok ("4 SUBSEKTOR BARU", biru) dengan item bergaya sama. Pengelompokan dari
+    font PDF membuat pasangan itu tidak perlu dicari secara visual. "" bila slide
+    tidak punya teks bergaya.
+    """
+    groups: dict[str, list[str]] = {}
+    for block in page.get_text("dict", sort=True)["blocks"]:
+        for line in block.get("lines", []):
+            for span in line["spans"]:
+                text = span["text"].strip()
+                if not text:
+                    continue
+                if not _gray(span["color"]):
+                    groups.setdefault(f"warna #{span['color']:06x}", []).append(text)
+                elif span["flags"] & pymupdf.TEXT_FONT_BOLD or "bold" in span["font"].lower():
+                    groups.setdefault("tebal", []).append(text)
+    if not groups:
+        return ""
+    lines = "\n".join(f"{style}: " + " | ".join(texts) for style, texts in groups.items())
+    return f"<style_groups>\n{lines}\n</style_groups>"
+
+
 def _coverage(reference: str, transcript: str) -> float:
     """Porsi kata text layer (> 3 huruf) yang ikut tertulis di transkripsi."""
     words = set(re.findall(r"\w{4,}", reference.lower()))
@@ -60,6 +90,7 @@ async def parse_slides(path: Path, tmp_dir: Path) -> list[dict]:
     """Satu item ``text`` per slide, berurutan, dengan ``page_idx`` dan gambar slidenya."""
     with pymupdf.open(path) as doc:
         references = [page.get_text(sort=True).strip() for page in doc]
+        styles = [style_groups(page) for page in doc]
         # Render langsung ke FIGURE_MAX_PIXELS di sisi panjang: teks kecil (spanduk di foto) masih terbaca.
         dpis = [FIGURE_MAX_PIXELS * 72 / max(page.rect.width, page.rect.height) for page in doc]
 
@@ -73,6 +104,7 @@ async def parse_slides(path: Path, tmp_dir: Path) -> list[dict]:
             text = await chain.ainvoke({
                 "page_number": page_idx + 1,
                 "reference_text": references[page_idx] or "(kosong)",
+                "style_groups": styles[page_idx],
                 "image_url": f"data:image/jpeg;base64,{encode_image_to_base64(str(image_path))}",
             })
         text = (text or "").strip()

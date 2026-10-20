@@ -34,6 +34,7 @@ ingestion = [
     "neo4j-graphrag>=1.13",
     "rdflib>=7",
     "rapidfuzz>=3",
+    "unoserver==3.4",
 ]
 
 dashboard = ["fastapi>=0.110"]

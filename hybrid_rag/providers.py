@@ -29,6 +29,15 @@ def _require(name: str) -> Any:
         raise RuntimeError(f"hybrid_rag.providers.configure({name}=...) has not been called")
     return hook
 
+# Model families whose endpoint rejects the field outright (Bedrock: "This model doesn't
+# support the temperature field"), so it is never sent to them.
+_NO_TEMPERATURE_FAMILIES = ("grok",)
+
+
+def _accepts_temperature(model_id: str | None) -> bool:
+    return not any(family in (model_id or "").lower() for family in _NO_TEMPERATURE_FAMILIES)
+
+
 def get_llm(
     model_id: str,
     *,
@@ -38,7 +47,7 @@ def get_llm(
     max_tokens: int | None = None,
     temperature: float | None = None,
 ) -> Any:
-    extra = {} if temperature is None else {"temperature": temperature}
+    extra = {"temperature": temperature} if temperature is not None and _accepts_temperature(model_id) else {}
     return _require("get_llm")(
         model_id,
         base_url=base_url,

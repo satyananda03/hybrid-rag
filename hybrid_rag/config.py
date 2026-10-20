@@ -23,6 +23,8 @@ class RagSettings(BaseSettings):
     extract_llm_binding_host: Optional[str] = Field(default=None, validation_alias="EXTRACT_LLM_BINDING_HOST")
     extract_llm_binding_api_key: Optional[str] = Field(default=None, validation_alias="EXTRACT_LLM_BINDING_API_KEY")
     extract_llm_timeout: Optional[float] = Field(default=None, validation_alias="EXTRACT_LLM_TIMEOUT")
+    # Safety cap only: reasoning tokens count toward it, so a small value truncates the JSON.
+    extract_llm_max_tokens: Optional[int] = Field(default=None, validation_alias="EXTRACT_LLM_MAX_TOKENS")
     vlm_model: Optional[str] = Field(default=None, validation_alias="VLM_MODEL")
     vlm_binding_host: Optional[str] = Field(default=None, validation_alias="VLM_BINDING_HOST")
     vlm_binding_api_key: Optional[str] = Field(default=None, validation_alias="VLM_BINDING_API_KEY")
@@ -86,6 +88,10 @@ class RagSettings(BaseSettings):
     textract_region: Optional[str] = Field(default=None, validation_alias="TEXTRACT_REGION")
     textract_max_concurrent_jobs: int = Field(default=50, validation_alias="TEXTRACT_MAX_CONCURRENT_JOBS")
     textract_mode: str = Field(default="async", validation_alias="TEXTRACT_MODE")  # "async" | "sync"
+    unoserver_host: str = Field(default="127.0.0.1", validation_alias="UNOSERVER_HOST")
+    unoserver_port: int = Field(default=2003, validation_alias="UNOSERVER_PORT")
+    office_convert_timeout: int = Field(default=120, validation_alias="OFFICE_CONVERT_TIMEOUT")
+    max_parallel_office_convert: int = Field(default=1, validation_alias="MAX_PARALLEL_OFFICE_CONVERT")
     figure_min_width_px: int = Field(default=500, validation_alias="FIGURE_MIN_WIDTH_PX")
     figure_min_height_px: int = Field(default=500, validation_alias="FIGURE_MIN_HEIGHT_PX")
     figure_min_area_ratio: float = Field(default=0.01, validation_alias="FIGURE_MIN_AREA_RATIO")

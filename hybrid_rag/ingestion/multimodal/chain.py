@@ -158,6 +158,7 @@ def _extract_llm_table() -> Runnable:
         base_url=settings.extract_llm_binding_host,
         api_key=settings.extract_llm_binding_api_key,
         timeout=settings.extract_llm_timeout,
+        max_tokens=settings.extract_llm_max_tokens,
     ).with_structured_output(TableAnalysis)
 
 
@@ -169,6 +170,7 @@ def _extract_llm_equation() -> Runnable:
         base_url=settings.extract_llm_binding_host,
         api_key=settings.extract_llm_binding_api_key,
         timeout=settings.extract_llm_timeout,
+        max_tokens=settings.extract_llm_max_tokens,
     ).with_structured_output(EquationAnalysis)
 
 @cache

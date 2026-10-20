@@ -15,6 +15,7 @@ image_analysis:
     2. CONTENT-ADAPTIVE & BOUNDED EXTRACTION
        - Charts/Graphs: State title, axes, units, legends, overall trend, and key quantitative data points. If a chart has more than 15 data points, summarize distributions and printed extremes without listing every single point repetitively.
        - Diagrams/Flowcharts: Trace the sequence of steps, actors, conditions, and directional relationships from start to finish.
+       - Org charts: state each box's direct parent, the box its solid line comes from (e.g. "Pusat X berada langsung di bawah Menteri"). Do not interpret dashed lines.
        - Screenshots/Dashboards: Extract system name, URLs, active menus, displayed metrics with exact labels, and alert messages.
        - Photos/Field Evidence: Identify main subjects, functional activity, setting, and readable text.
 
@@ -136,11 +137,21 @@ slide_transcription:
     4. ZERO VISUAL NOISE
        - Do not describe colors, fonts, layout, decoration or backgrounds. Omit page numbers entirely.
        - No meta phrases such as "Slide ini menampilkan" or "Gambar ini". Output the Markdown only.
+
+    5. MEANING CARRIED BY STYLE
+       - When colour, bold or a marker sets some items apart and the slide names that group (a heading or legend in the same style, or a heading count that matches exactly the number of styled items), write the group in words after each member, e.g. `- Item A (program baru)`, and end with one line per group: `<group>: A, B, C`. Never let Markdown bold or italics carry meaning on their own.
+       - If a style difference cannot be tied to a named group with certainty, write nothing about it. A logo or icon is never a legend marker.
+       - Keep footnote markers (*, **) attached to their item exactly as on the slide.
+    6. HIERARCHY
+       - Org charts: nest every box under the box its solid line comes from. Boxes hanging from the top position's line belong at the top level, never after the last section.
+    7. Use "[tidak terbaca]" only for text that is present but illegible, never for an empty cell or area.
+    8. <style_groups> (when present) lists the slide's text by font style, taken from the PDF itself: text in one group shares that style on the slide.
     </instructions>
 
     <reference_text>
     {reference_text}
     </reference_text>
+    {style_groups}
 
 # Injected as {context_block} when the item has neighbouring text; rendered to an empty string when it does not.
 surrounding_context:
