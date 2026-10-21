@@ -2,6 +2,7 @@
 1. Benchmark amazon titan text embedding v2 vs amazon nova multimodal embedding v1
 2. Benchmark amazon bedrock reranker
 3. Strategi consume link S3 gambar yang direturn saat retrieval
+4. Layout Aware Detection Chunking
 
 ### Parameter Ingestion
 
@@ -22,7 +23,7 @@
 
 - Pengaturan dari `ontology` sampai `save_parent` disimpan di metadata dokumen, jadi retry atau resume dokumen tetap memakai nilai aslinya.
 - Parameter berlaku per dokumen, kecuali `prune_isolated`: penghapusan berjalan sekali di akhir batch, dan hanya mencakup dokumen yang diingest dengan `prune_isolated=True`.
-- Ukuran chunk dan konkurensi bukan parameter pemanggilan, melainkan ENV: `PARENT_CHUNK_SIZE`, `PARENT_CHUNK_OVERLAP`, `CHILD_CHUNK_SIZE`, `CHILD_CHUNK_OVERLAP`, `MAX_GLEANING`, `MAX_EXTRACT_INPUT_TOKENS`, `MAX_PARALLEL_INGESTION`, `EMBEDDING_BATCH_NUM`.
+- Ukuran chunk dan konkurensi bukan parameter pemanggilan, melainkan ENV: `PARENT_MAX_TOKENS` (parent = satu section dokumen; hanya section yang lebih besar dipotong di antara paragraf), `CHILD_CHUNK_SIZE`, `CHILD_CHUNK_OVERLAP`, `MAX_GLEANING`, `MAX_EXTRACT_INPUT_TOKENS`, `MAX_PARALLEL_INGESTION`, `EMBEDDING_BATCH_NUM`.
 - `parse_file(file_path)` hanya menerima path file dan mengembalikan `content_list`.
 
 ```python

@@ -69,7 +69,7 @@ class _IngestionMixin:
         entity_resolution_llm: bool = True,
         orphan_repair: bool = True,
         prune_isolated: bool = True,
-        page_offsets: List[Dict[str, int]] | None = None,
+        chunk_options: Dict[str, Any] | None = None,
         save_parent: bool = True,
     ) -> None:
         """Run the plain-text half of a document through the ingest pipeline.
@@ -89,7 +89,7 @@ class _IngestionMixin:
             entity_resolution_llm=entity_resolution_llm,
             orphan_repair=orphan_repair,
             prune_isolated=prune_isolated,
-            page_offsets=[list(page_offsets or [])],
+            chunk_options=[dict(chunk_options or {})],
             save_parent=save_parent,
         )
         await self.apipeline_process_enqueue_documents()
@@ -203,7 +203,7 @@ class _IngestionMixin:
             self.logger.info(f"  - {block_type}: {count}")
 
         # Step 1: Separate text and multimodal content
-        text_content, multimodal_items, page_offsets = separate_content(content_list)
+        text_content, multimodal_items, chunk_options = separate_content(content_list)
 
         # Step 2: Hand the whole document to the pipeline — the text body plus
         # the multimodal items riding along in full_docs. This runs even when the
@@ -218,7 +218,7 @@ class _IngestionMixin:
             entity_registry=entity_registry,
             entity_resolution=entity_resolution,
             entity_resolution_llm=entity_resolution_llm,
-            page_offsets=page_offsets,
+            chunk_options=chunk_options,
             save_parent=save_parent,
         )
 

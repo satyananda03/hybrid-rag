@@ -237,44 +237,67 @@ def extract_leading_trailing_from_content_list(
     return leading, trailing
 
 
-def page_offsets_of(text_parts: List[str], pages: List[int | str | None]) -> List[Dict[str, Any]]:
-    """Awal tiap halaman di dalam teks gabungan, dalam koordinat teks yang **tersimpan**.
+def _part_spans(text_parts: List[str]) -> List[Tuple[int, int] | None]:
+    """``(start, end)`` tiap part di dalam teks gabungan, dalam koordinat teks yang **tersimpan**.
 
     Enqueue menyimpan ``sanitize_text_for_encoding("\\n\\n".join(parts))`` (pipeline.py),
-    dan sanitize bisa mengubah panjang (``html.unescape``, strip). Maka offset dihitung
+    dan sanitize bisa mengubah panjang (``html.unescape``, strip). Maka posisi dihitung
     pada hasil fungsi yang sama atas input yang sama — bukan pada teks mentah — dengan
     ``find`` berurutan atas tiap part yang sudah disanitasi. Teks gabungan sendiri tidak
     disentuh; ini murni perhitungan di samping.
 
-    Part yang tidak ketemu (semestinya tidak pernah) dilewati, bukan digalatkan: halaman
-    yang hilang hanya membuat chunk itu tanpa ``sidecar``, sedangkan ingest yang gagal
-    membuat dokumen hilang seluruhnya. Part tanpa halaman (``None``: .md/.txt) juga
-    dilewati, jadi dokumen tanpa halaman menghasilkan ``[]``.
+    Part yang tidak ketemu (semestinya tidak pernah) menjadi ``None``, bukan galat:
+    posisi yang hilang hanya membuat chunk itu tanpa ``sidecar``, sedangkan ingest yang
+    gagal membuat dokumen hilang seluruhnya.
     """
     from hybrid_rag.ingestion.text_cleaning import sanitize_text_for_encoding
 
     whole = sanitize_text_for_encoding("\n\n".join(text_parts))
-    offsets: List[Dict[str, Any]] = []
+    spans: List[Tuple[int, int] | None] = []
     cursor = 0
-    for part, page in zip(text_parts, pages):
-        if page is None:
-            continue
+    for index, part in enumerate(text_parts):
         needle = sanitize_text_for_encoding(part)
-        if not needle:
-            continue
-        pos = whole.find(needle, cursor)
+        pos = whole.find(needle, cursor) if needle else -1
         if pos < 0:
-            logger.warning("[page-offsets] part halaman %s tidak ditemukan di teks tersanitasi", page)
+            if needle:
+                logger.warning("[page-offsets] part %s tidak ditemukan di teks tersanitasi", index)
+            spans.append(None)
             continue
         cursor = pos + len(needle)
+        spans.append((pos, cursor))
+    return spans
+
+
+def _page_offsets(spans: List[Tuple[int, int] | None], pages: List[int | str | None]) -> List[Dict[str, Any]]:
+    """Awal tiap halaman; part tanpa halaman (``None``: .md/.txt) dilewati."""
+    offsets: List[Dict[str, Any]] = []
+    for span, page in zip(spans, pages):
+        if span is None or page is None:
+            continue
         if not offsets or offsets[-1]["page"] != page:
-            offsets.append({"page": page, "start": pos})
+            offsets.append({"page": page, "start": span[0]})
     return offsets
+
+
+def page_offsets_of(text_parts: List[str], pages: List[int | str | None]) -> List[Dict[str, Any]]:
+    """Awal tiap halaman di dalam teks gabungan (lihat :func:`_part_spans` untuk koordinatnya).
+
+    Dokumen tanpa halaman menghasilkan ``[]``.
+    """
+    return _page_offsets(_part_spans(text_parts), pages)
+
+
+def _text_level(item: Dict[str, Any]) -> int:
+    """Level heading item content list (konvensi MinerU ``text_level``); 0 untuk body."""
+    try:
+        return max(0, int(item.get("text_level", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def separate_content(
     content_list: List[Dict[str, Any]],
-) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, int]]]:
+) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
     """
     Separate text content and multimodal content
 
@@ -282,13 +305,21 @@ def separate_content(
         content_list: Content list from MinerU parsing
 
     Returns:
-        (text_content, multimodal_items, page_offsets): Pure text content, multimodal
-        items list, and ``[{"page": idx, "start": char}]`` — awal tiap halaman di dalam
-        ``text_content`` setelah sanitasi (lihat :func:`page_offsets_of`), plus ``"image"``
-        (URL gambar slide) untuk halaman dek slide.
+        (text_content, multimodal_items, chunk_options): Pure text content, multimodal
+        items list, and what the chunker needs to know about ``text_content`` — only
+        the keys that have a value:
+
+        - ``page_offsets``: ``[{"page", "start"}]``, awal tiap halaman setelah sanitasi
+          (lihat :func:`page_offsets_of`), plus ``"image"`` (URL gambar slide) untuk
+          halaman dek slide.
+        - ``heading_offsets``: ``[{"start", "end", "level"}]`` tiap item dengan
+          ``text_level``, dari parser mana pun.
+        - ``layout``: jenis dokumen yang dicap router (``chunking.structure.CHUNKERS``).
     """
     text_parts = []
     text_pages = []
+    text_levels = []
+    layout = None
     multimodal_items = []
 
     for index, item in enumerate(content_list):
@@ -300,6 +331,8 @@ def separate_content(
             if text.strip():
                 text_parts.append(text)
                 text_pages.append(normalize_page(item.get("page_idx")))
+                text_levels.append(_text_level(item))
+                layout = layout or item.get("layout")
         else:
             # Multimodal content (image, table, equation, etc.)
             multimodal_item = dict(item)
@@ -319,7 +352,13 @@ def separate_content(
 
     # Merge all text content
     text_content = "\n\n".join(text_parts)
-    page_offsets = page_offsets_of(text_parts, text_pages)
+    spans = _part_spans(text_parts)
+    page_offsets = _page_offsets(spans, text_pages)
+    heading_offsets = [
+        {"start": span[0], "end": span[1], "level": level}
+        for span, level in zip(spans, text_levels)
+        if span is not None and level > 0
+    ]
     # Gambar slide (slides.py) ikut offset halamannya, lalu ke sidecar chunk. Hanya URL:
     # path lokal (konten yang tidak di-host) tidak bisa dibuka lagi saat retrieval.
     slide_images = {
@@ -344,7 +383,8 @@ def separate_content(
     if modal_types:
         logger.info(f"  - Multimodal type distribution: {modal_types}")
 
-    return text_content, multimodal_items, page_offsets
+    chunk_options = {"page_offsets": page_offsets, "heading_offsets": heading_offsets, "layout": layout}
+    return text_content, multimodal_items, {key: value for key, value in chunk_options.items() if value}
 
 
 def encode_image_to_base64(image_path: str) -> str:

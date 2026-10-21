@@ -172,7 +172,7 @@ class _PipelineMixin:
         entity_resolution_llm: bool = True,
         orphan_repair: bool = True,
         prune_isolated: bool = True,
-        page_offsets: list[list[dict[str, int]]] | None = None,
+        chunk_options: list[dict[str, Any]] | None = None,
         save_parent: bool = True,
     ) -> str:
         """
@@ -266,7 +266,7 @@ class _PipelineMixin:
             content: str,
             doc_format: str,
             modal_items: list[dict[str, Any]] | None = None,
-            offsets: list[dict[str, int]] | None = None,
+            options: dict[str, Any] | None = None,
         ) -> None:
             file_path_canonical = file_paths_canonical[index]
 
@@ -335,11 +335,11 @@ class _PipelineMixin:
             }
             if content_hash:
                 content_data["content_hash"] = content_hash
-            if offsets:
-                # Awal tiap halaman di ``content`` (koordinat pasca-sanitasi, dihitung
-                # separate_content). Menumpang slot JSONB ``chunk_options`` yang sudah
-                # ada supaya sampai ke process_single_document tanpa kolom baru.
-                content_data["chunk_options"] = {"page_offsets": list(offsets)}
+            if options:
+                # Halaman, heading dan layout ``content`` (koordinat pasca-sanitasi,
+                # dihitung separate_content). Disimpan di slot JSONB ``chunk_options``
+                # supaya sampai ke process_single_document tanpa kolom baru.
+                content_data["chunk_options"] = dict(options)
             contents[doc_id] = content_data
 
         if multimodal_items is not None and len(multimodal_items) != len(input):
@@ -352,7 +352,7 @@ class _PipelineMixin:
                 sanitize_text_for_encoding(doc),
                 FULL_DOCS_FORMAT_RAW,
                 multimodal_items[i] if multimodal_items else None,
-                page_offsets[i] if page_offsets else None,
+                chunk_options[i] if chunk_options else None,
             )
 
         # 2. Generate document initial status (without content)
@@ -1475,9 +1475,9 @@ class _PipelineMixin:
         content = (content_data or {}).get("content") or ""
 
         # Chunking is always contextualized parent-child: split into
-        # large parent chunks (enough context for entity extraction)
-        # and small child chunks (precise for retrieval), then rewrite
-        # each child to carry its parent's context. Only children are
+        # parent chunks along the document's sections (context for entity
+        # extraction) and small child chunks (precise for retrieval), then
+        # rewrite each child to carry its parent's context. Only children are
         # persisted; parents feed extraction and are then discarded,
         # with source_ids redirected onto the children further below.
         from hybrid_rag.ingestion.chunking import (
@@ -1486,27 +1486,25 @@ class _PipelineMixin:
             redirect_source_ids,
         )
         from hybrid_rag.ingestion.chunking.parent_child import (
-            PARENT_CHUNK_SIZE,
-            PARENT_CHUNK_OVERLAP,
             CHILD_CHUNK_SIZE,
             CHILD_CHUNK_OVERLAP,
         )
+        from hybrid_rag.ingestion.chunking.structure import PARENT_MAX_TOKENS
 
+        chunk_options = (content_data or {}).get("chunk_options") or {}
         # Recorded on ``doc_status.metadata['chunk_opts']`` via
-        # ``extraction_meta`` so admin/list APIs can see the chunk
-        # sizes a document was actually built with. Parent-child reads
-        # its sizes from the environment, so there is nothing
-        # per-document to resolve here.
+        # ``extraction_meta`` so admin/list APIs can see how a document
+        # was actually chunked. Sizes come from the environment; only the
+        # layout is per document.
         chunk_opts_str: str = (
-            f"parent={PARENT_CHUNK_SIZE}/{PARENT_CHUNK_OVERLAP}, "
+            f"parent<={PARENT_MAX_TOKENS}tok/{chunk_options.get('layout', 'unrecorded')}, "
             f"child={CHILD_CHUNK_SIZE}/{CHILD_CHUNK_OVERLAP}"
         )
 
         progress.stage("chunk")
         logger.info(f"Chunking parent-child, doc_id: {doc_id}")
-        page_offsets = ((content_data or {}).get("chunk_options") or {}).get("page_offsets")
         parent_result, child_result = chunking_parent_child(
-            self.tokenizer, content, page_offsets=page_offsets
+            self.tokenizer, content, chunk_options=chunk_options
         )
 
         # === Parent-Child storage & extraction === #

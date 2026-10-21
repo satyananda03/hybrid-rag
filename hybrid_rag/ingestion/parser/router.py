@@ -35,14 +35,26 @@ def _read_content_list(path: Path) -> list[dict]:
         )
     return data
 
+def _with_layout(content_list: list[dict], layout: str) -> list[dict]:
+    """Tandai item teks dengan layout dokumen — kunci ``chunking.structure.CHUNKERS``.
+
+    Hanya router yang tahu sebuah PDF menjadi dek slide atau dokumen biasa, jadi di
+    sinilah layout dicatat. Nilai yang sudah dibawa content list (prebuilt) dihormati.
+    """
+    for item in content_list:
+        if item.get("type", "text") == "text":
+            item.setdefault("layout", layout)
+    return content_list
+
 async def _parse_pdf(path: Path, tmp_dir: Path, entity_registry: str | None = None, slides: bool = False) -> list[dict]:
     """Dek slide → VLM per slide; selain itu Textract (TEXTRACT_MODE: async/sync), lalu content list dari blocks."""
     if slides or is_slide_deck(path):
-        return await parse_slides(path, tmp_dir, entity_registry)
+        return _with_layout(await parse_slides(path, tmp_dir, entity_registry), "slides")
     raw_parse = await parse_document_to_json(str(path), output_file=str(tmp_dir / "raw_parsing_result.json"))
-    return await asyncio.to_thread(
+    content_list = await asyncio.to_thread(
         reconstruct_content_list, raw_parse, output_file=str(tmp_dir / "formatted_parsing_result.json")
     )
+    return _with_layout(content_list, "document")
 
 async def _parse_office(path: Path, tmp_dir: Path, entity_registry: str | None = None) -> list[dict]:
     """docx/pptx/… → PDF lewat unoserver, lalu jalur PDF. pptx selalu dek slide, apa pun rasio halamannya
@@ -54,17 +66,17 @@ async def _parse_office(path: Path, tmp_dir: Path, entity_registry: str | None =
     return await _parse_pdf(pdf, tmp_dir, entity_registry, slides=path.suffix.lower() == ".pptx")
 
 async def _parse_xlsx(path: Path, tmp_dir: Path, entity_registry: str | None = None) -> list[dict]:
-    return await asyncio.to_thread(parse_xlsx, path, tmp_dir / "images")
+    return _with_layout(await asyncio.to_thread(parse_xlsx, path, tmp_dir / "images"), "sheet")
 
 async def _read_text(path: Path, tmp_dir: Path, entity_registry: str | None = None) -> list[dict]:
-    return await asyncio.to_thread(_read_text_document, path)
+    return _with_layout(await asyncio.to_thread(_read_text_document, path), "document")
 
 async def _read_prebuilt(path: Path, tmp_dir: Path, entity_registry: str | None = None) -> list[dict]:
     """A content list that is already the parser's output (``notion_sync``): nothing to parse,
     only its images brought under the VLM limits like every parser's figures."""
     content_list = await asyncio.to_thread(_read_content_list, path)
     await asyncio.to_thread(fit_figures, content_list, tmp_dir)
-    return content_list
+    return _with_layout(content_list, "document")
 
 PARSERS = {
     "pdf": (_parse_pdf, True),

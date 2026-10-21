@@ -133,6 +133,7 @@ def _page_items(page_data: dict, data: dict, images_dir: str) -> list:
         return []
 
     ordered_children = get_children(page_block, block_map)
+    page_child_ids = {b["Id"] for b in ordered_children}
     header_bboxes = [b["Geometry"]["BoundingBox"] for b in ordered_children if b["BlockType"] == "LAYOUT_HEADER"]
     footer_bboxes = [b["Geometry"]["BoundingBox"] for b in ordered_children if b["BlockType"] == "LAYOUT_FOOTER"]
     table_blocks = [b for b in blocks if b["BlockType"] == "TABLE"]
@@ -144,7 +145,7 @@ def _page_items(page_data: dict, data: dict, images_dir: str) -> list:
     for block in ordered_children:
         btype = block["BlockType"]
         bbox = block["Geometry"]["BoundingBox"]
-        if btype in IGNORED_LAYOUT_TYPES:
+        if btype in IGNORED_LAYOUT_TYPES or _items_listed_on_page(block, page_child_ids):
             continue
         if btype in LAYOUT_TEXT_TYPES:
             item = _text_item(block, block_map, page_idx)
@@ -160,6 +161,32 @@ def _page_items(page_data: dict, data: dict, images_dir: str) -> list:
     return items
 
 
+def _items_listed_on_page(block: dict, page_child_ids: set) -> bool:
+    """``LAYOUT_LIST`` whose ``LAYOUT_TEXT`` items are PAGE children too.
+
+    Textract lists each item both under its list and under the PAGE, in reading order
+    right after the list. Reading the list as well would put its text in twice, the
+    first time joined into one line that loses the item boundaries; the items alone
+    carry all of it.
+    """
+    if block["BlockType"] != "LAYOUT_LIST":
+        return False
+    item_ids = [i for rel in block.get("Relationships", []) if rel["Type"] == "CHILD" for i in rel["Ids"]]
+    return bool(item_ids) and all(i in page_child_ids for i in item_ids)
+
+
+def _demote_late_titles(content_list: list) -> None:
+    """Only the first heading can be ``LAYOUT_TITLE``, "the main title of the document".
+
+    Textract gives no heading levels, only TITLE and SECTION_HEADER, and tags a large
+    heading further in as TITLE. At level 1 it would put the sections after it under
+    it in their heading path, so past the first heading it counts as a section header.
+    """
+    headings = [item for item in content_list if item.get("text_level")]
+    for item in headings[1:]:
+        item["text_level"] = max(item["text_level"], HEADING_LAYOUT_LEVELS["LAYOUT_SECTION_HEADER"])
+
+
 def reconstruct_content_list(data: dict, output_file: str = "formatted_output.json") -> list:
     """Format raw JSON output Textract menjadi content list.
 
@@ -170,6 +197,7 @@ def reconstruct_content_list(data: dict, output_file: str = "formatted_output.js
     content_list = []
     for page_data in data.get("pages", []):
         content_list.extend(_page_items(page_data, data, images_dir))
+    _demote_late_titles(content_list)
 
     if output_file is None:
         if images_dir:

@@ -12,7 +12,8 @@ from hybrid_rag import progress
 from hybrid_rag.config import RagSettings, settings
 from hybrid_rag.core.chunk_schema import format_location, normalize_page
 from hybrid_rag.ingestion.parser import router
-from hybrid_rag.ingestion.chunking.parent_child import _drop_dangling_headings, _page_range, chunking_parent_child
+from hybrid_rag.ingestion.chunking.parent_child import _page_range, chunking_parent_child
+from hybrid_rag.ingestion.chunking.structure import DocumentChunker, SheetChunker, SlideChunker, chunker_for
 from hybrid_rag.ingestion.knowledge_graph.entity_repairment import (
     OntologyOrphanRepairOutput,
     OrphanRepairOutput,
@@ -135,14 +136,14 @@ def test_pdf_goes_through_textract_then_hosting_and_cleans_up(tmp_path, monkeypa
         async with router.parse_file(pdf) as content_list:
             assert seen["tmp_dir"].exists()  # still there while the caller inserts
             return content_list
-    assert asyncio.run(go()) == [{"type": "text", "text": "isi"}]
+    assert asyncio.run(go()) == [{"type": "text", "text": "isi", "layout": "document"}]
     assert seen["path"] == str(pdf) and len(hosted) == 1
     assert not seen["tmp_dir"].exists()
 
 def test_text_files_are_not_hosted(tmp_path, hosted):
     md = tmp_path / "a.md"
     md.write_text("halo", encoding="utf-8")
-    assert parse(md) == [{"type": "text", "text": "halo"}] and hosted == []
+    assert parse(md) == [{"type": "text", "text": "halo", "layout": "document"}] and hosted == []
 
 
 def test_content_list_images_are_fitted_then_hosted(tmp_path, hosted, monkeypatch):
@@ -266,8 +267,8 @@ def test_excel_sheets_are_hard_chunk_boundaries():
         {"type": "table", "table_body": "| No |", "page_idx": "14. JABAR"},
         {"type": "text", "text": "https://drive.google.com/jabar", "page_idx": "14. JABAR"},
     ]
-    content, items, offsets = separate_content(content_list)
-    parents, children = chunking_parent_child(get_tokenizer(), content, page_offsets=offsets)
+    content, items, options = separate_content(content_list)
+    parents, children = chunking_parent_child(get_tokenizer(), content, chunk_options=options)
     for chunk in parents + children:
         assert not ("BANTEN" in chunk["content"] and "jabar" in chunk["content"])
         assert chunk["sidecar"]["page_start"] == chunk["sidecar"]["page_end"]
@@ -275,8 +276,120 @@ def test_excel_sheets_are_hard_chunk_boundaries():
 
     # halaman PDF tetap mengalir: kalimat menyambung antar halaman
     pdf = page_offsets_of(["akhir halaman satu", "awal halaman dua"], [0, 1])
-    parents, _ = chunking_parent_child(get_tokenizer(), "akhir halaman satu\n\nawal halaman dua", page_offsets=pdf)
+    parents, _ = chunking_parent_child(get_tokenizer(), "akhir halaman satu\n\nawal halaman dua", chunk_options={"page_offsets": pdf})
     assert len(parents) == 1 and parents[0]["sidecar"] == {"page_start": 0, "page_end": 1}
+
+def test_parents_follow_heading_sections():
+    """merge_peers: satu section per parent, dipotong di antara paragraf hanya bila lebih besar dari batas."""
+    from hybrid_rag.core.tokenizer import get_tokenizer
+
+    long_section = [f"Kalimat ke-{i} menjelaskan arah kebijakan ekonomi kreatif secara rinci." for i in range(8)]
+    content_list = [
+        {"type": "text", "text": "Judul Dokumen", "text_level": 1, "page_idx": 0},
+        {"type": "text", "text": "Pengantar singkat dokumen.", "page_idx": 0},
+        {"type": "text", "text": "BAB II", "text_level": 2, "page_idx": 0},
+        {"type": "text", "text": "A. Arah", "text_level": 2, "page_idx": 0},
+        *({"type": "text", "text": p, "page_idx": 1} for p in long_section),
+        {"type": "text", "text": "B. Sasaran", "text_level": 2, "page_idx": 1},
+        {"type": "text", "text": "Sasaran singkat.", "page_idx": 1},
+    ]
+    content, _, options = separate_content(router._with_layout(content_list, "document"))
+    tokenizer = get_tokenizer()
+    parents, children = chunking_parent_child(tokenizer, content, chunk_options=options, parent_max_tokens=60)
+
+    headings = [(p["heading"]["parent_headings"], p["heading"]["heading"]) for p in parents]
+    section_a = [p for p, h in zip(parents, headings) if h == (["Judul Dokumen"], "A. Arah")]
+    assert headings[0] == ([], "Judul Dokumen") and headings[-1] == (["Judul Dokumen"], "B. Sasaran")
+    assert len(section_a) > 1 and all(p["tokens"] <= 60 for p in parents)
+    assert section_a[0]["content"].startswith("BAB II\n\nA. Arah\n\nKalimat ke-0")  # heading kosong ikut section berikutnya
+    assert "".join(p["content"] for p in section_a).count("Kalimat ke-") == 8
+    assert all("Sasaran" not in p["content"] for p in parents[:-1])
+    assert not any("heading" in c for c in children)
+
+def test_cut_backs_off_to_the_cleanest_boundary():
+    """Greedy murni akan memotong kalimat yang terbelah halaman dan memisahkan pengantar dari daftarnya."""
+    from hybrid_rag.core.tokenizer import get_tokenizer
+
+    tokenizer = get_tokenizer()
+
+    def parents(blocks, max_tokens):
+        content = "\n\n".join(blocks)
+        return [content[s.start:s.end] for s in DocumentChunker(tokenizer, max_tokens).split(content)]
+
+    opening = "Kalimat pembuka yang selesai dengan titik."
+    broken = ["Program ini dijalankan melalui pembentukan komite", "lintas OPD dan penyusunan roadmap tahunan yang dievaluasi setiap semester."]
+    listing = ["Rinciannya sebagai berikut:", "a. butir pertama;", "b. butir kedua."]
+    assert parents([opening, *broken], 32) == [opening, "\n\n".join(broken)]
+    assert parents([opening, *listing], 18) == [opening, "\n\n".join(listing)]
+
+def test_markdown_and_text_level_mark_one_heading():
+    from hybrid_rag.core.tokenizer import get_tokenizer
+
+    content, _, options = separate_content(router._with_layout([
+        {"type": "text", "text": "## Latar Belakang", "text_level": 2},
+        {"type": "text", "text": "Isi latar belakang."},
+        {"type": "text", "text": "### Rincian"},
+        {"type": "text", "text": "Isi rincian."},
+    ], "document"))
+    spans = chunker_for(get_tokenizer(), options).split(content)
+    assert [[h.text for h in s.headings] for s in spans] == [["Latar Belakang"], ["Latar Belakang", "Rincian"]]
+
+def test_untitled_slide_stays_its_own_parent():
+    from hybrid_rag.core.tokenizer import get_tokenizer
+
+    content, _, options = separate_content(router._with_layout([
+        {"type": "text", "text": "# Agenda\n\nPembukaan acara.", "page_idx": 0},
+        {"type": "text", "text": "Lanjutan tanpa judul.", "page_idx": 1},
+    ], "slides"))
+    parents, _ = chunking_parent_child(get_tokenizer(), content, chunk_options=options)
+    assert [p["content"] for p in parents] == ["# Agenda\n\nPembukaan acara.", "Lanjutan tanpa judul."]
+    assert parents[0]["heading"]["heading"] == "Agenda" and "heading" not in parents[1]
+
+def textract_page(page_children, layouts):
+    """A one-page raw Textract response: ``layouts`` maps block id → (BlockType, text or child ids)."""
+    geometry = {"Geometry": {"BoundingBox": {"Left": 0.1, "Top": 0.1, "Width": 0.5, "Height": 0.05}}}
+    blocks = [{"Id": "page", "BlockType": "PAGE", **geometry, "Relationships": [{"Type": "CHILD", "Ids": page_children}]}]
+    for block_id, (block_type, body) in layouts.items():
+        children = body if isinstance(body, list) else [f"{block_id}-line"]
+        blocks.append({"Id": block_id, "BlockType": block_type, **geometry, "Relationships": [{"Type": "CHILD", "Ids": children}]})
+        if isinstance(body, str):
+            blocks.append({"Id": f"{block_id}-line", "BlockType": "LINE", "Text": body, **geometry})
+    return {"images_dir": "", "pages": [{"page_idx": 0, "img_w": 100, "img_h": 100, "Blocks": blocks}]}
+
+def test_textract_lists_are_read_once_and_only_the_first_heading_is_a_title():
+    from hybrid_rag.ingestion.parser.pdf.amazon_textract import reconstruct_content_list
+
+    layouts = {
+        "s1": ("LAYOUT_SECTION_HEADER", "Program"),
+        "l1": ("LAYOUT_LIST", ["i1", "i2"]),
+        "i1": ("LAYOUT_TEXT", "a. Alamat;"),
+        "i2": ("LAYOUT_TEXT", "b. Email."),
+        "t1": ("LAYOUT_TITLE", "Kemitraan"),
+        "s2": ("LAYOUT_SECTION_HEADER", "Kontak"),
+    }
+    items = reconstruct_content_list(textract_page(list(layouts), layouts), output_file=None)
+    assert [(i["text"], i.get("text_level")) for i in items] == [
+        ("Program", 2), ("a. Alamat;", None), ("b. Email.", None), ("Kemitraan", 2), ("Kontak", 2),
+    ]
+
+    # list items not on the PAGE are read through their list; a TITLE that comes first stays the title
+    layouts = {"t1": ("LAYOUT_TITLE", "Judul"), **{k: layouts[k] for k in ("l1", "i1", "i2")}}
+    items = reconstruct_content_list(textract_page(["t1", "l1"], layouts), output_file=None)
+    assert [(i["text"], i.get("text_level")) for i in items] == [("Judul", 1), ("a. Alamat; b. Email.", None)]
+
+def test_router_records_layout_on_text_items_only():
+    content_list = [{"type": "text", "text": "a"}, {"type": "table", "table_body": "|a|"}, {"type": "text", "text": "b", "layout": "sheet"}]
+    router._with_layout(content_list, "document")
+    assert [item.get("layout") for item in content_list] == ["document", None, "sheet"]
+
+def test_chunker_for_documents_without_a_recorded_layout():
+    from hybrid_rag.core.tokenizer import get_tokenizer
+
+    tokenizer = get_tokenizer()
+    assert type(chunker_for(tokenizer, {"page_offsets": [{"page": "Rekap", "start": 0}]})) is SheetChunker
+    assert type(chunker_for(tokenizer, {"page_offsets": [{"page": 0, "start": 0, "image": "https://s3/s0.jpg"}]})) is SlideChunker
+    assert type(chunker_for(tokenizer, {"page_offsets": [{"page": 0, "start": 0}]})) is DocumentChunker
+    assert type(chunker_for(tokenizer, {"layout": "tidak-dikenal"})) is DocumentChunker
 
 class RecordingSink:
     def __init__(self):
@@ -601,10 +714,11 @@ def test_host_figures_uploads_exactly_the_items_with_an_image(monkeypatch):
 
 
 def test_slide_images_reach_page_offsets_and_sidecars():
-    _, _, offsets = separate_content([
+    _, _, options = separate_content([
         {"type": "text", "text": "slide satu", "page_idx": 0, "img_path": "https://s3/s0.jpg"},
         {"type": "text", "text": "slide dua", "page_idx": 1, "img_path": "/tmp/upload_gagal.jpg"},
     ])
+    offsets = options["page_offsets"]
     assert offsets == [{"page": 0, "start": 0, "image": "https://s3/s0.jpg"}, {"page": 1, "start": 12}]
     starts = [o["start"] for o in offsets]
     assert _page_range(offsets, starts, (0, 16)) == {"page_start": 0, "page_end": 1, "images": ["https://s3/s0.jpg"]}
@@ -612,15 +726,15 @@ def test_slide_images_reach_page_offsets_and_sidecars():
 
 
 def test_documents_without_slides_keep_their_offsets_and_sidecars():
-    text, items, offsets = separate_content([
+    text, items, options = separate_content([
         {"type": "text", "text": "isi halaman", "page_idx": 0},
         {"type": "image", "img_path": "https://s3/fig.jpg", "page_idx": 0},
         {"type": "table", "table_body": "|a|", "page_idx": 1},
         {"type": "text", "text": "isi berikutnya", "page_idx": 1},
     ])
-    assert offsets == [{"page": 0, "start": 0}, {"page": 1, "start": 13}]
+    assert options == {"page_offsets": [{"page": 0, "start": 0}, {"page": 1, "start": 13}]}
     assert len(items) == 2 and "https://s3/fig.jpg" not in text
-    assert _page_range(offsets, [0, 13], (0, 20)) == {"page_start": 0, "page_end": 1}
+    assert _page_range(options["page_offsets"], [0, 13], (0, 20)) == {"page_start": 0, "page_end": 1}
 
 
 # --- images sent to the VLM -------------------------------------------------------------
@@ -741,22 +855,6 @@ def test_ingestion_rag_keeps_purge_and_delete_methods():
 
     for name in ("_chunk_ids_from_storage", "_purge_doc_chunks_and_kg", "adelete_by_doc_id", "_get_existing_llm_cache_ids"):
         assert callable(getattr(IngestionRAG, name)), name
-
-
-def test_dangling_heading_moves_to_the_next_parent():
-    caps = "Direktur Festival : M. ILHAM\n\nDEPUTI 3 ICCN - DATA, PENELITIAN & INDEKS KREATIF"
-    nxt = "DEPUTI 3 ICCN - DATA, PENELITIAN & INDEKS KREATIF\n\na. Direktorat Data & Analitik"
-    md = "Isi sasaran pertama.\n\n## B. Sasaran"
-    md_next = "## B. Sasaran\n\nSasaran pembangunan ..."
-    assert _drop_dangling_headings([caps, nxt, md, md_next], 400) == [
-        "Direktur Festival : M. ILHAM", nxt, "Isi sasaran pertama.", md_next,
-    ]
-    # kept: heading not carried into the next parent, a caps bullet, the last parent, no overlap
-    assert _drop_dangling_headings([caps, "lain sama sekali"], 400) == [caps, "lain sama sekali"]
-    bullet = "Nilai:\n\n- EKRAF BIJAK SEKALI"
-    assert _drop_dangling_headings([bullet, "- EKRAF BIJAK SEKALI\n- lain"], 400)[0] == bullet
-    assert _drop_dangling_headings([nxt, caps], 400) == [nxt, caps]
-    assert _drop_dangling_headings([caps, "x " + nxt], 0) == [caps, "x " + nxt]
 
 
 def test_accept_repair_keeps_only_known_orphan_edges():

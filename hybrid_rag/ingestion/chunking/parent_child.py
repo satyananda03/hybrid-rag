@@ -1,6 +1,5 @@
 import asyncio
 import bisect
-import re
 from collections.abc import Callable
 from typing import Any
 
@@ -12,9 +11,9 @@ from functools import cache
 
 from hybrid_rag import providers
 from hybrid_rag.config import NOVA_MODELS, settings
-from hybrid_rag.core.chunk_schema import is_sheet
 from hybrid_rag.core.constants import GRAPH_FIELD_SEP
 from hybrid_rag.core.tokenizer import Tokenizer
+from hybrid_rag.ingestion.chunking.structure import chunker_for
 from hybrid_rag.ingestion.knowledge_graph.entity_resolution import acronym_glossary
 from hybrid_rag.ingestion.token_limit import _normalized_child_offsets
 from hybrid_rag.ingestion.utils import raise_first_failure
@@ -23,8 +22,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-PARENT_CHUNK_SIZE = settings.parent_chunk_size
-PARENT_CHUNK_OVERLAP = settings.parent_chunk_overlap
 CHILD_CHUNK_SIZE = settings.child_chunk_size
 CHILD_CHUNK_OVERLAP = settings.child_chunk_overlap
 CONTEXTUALIZE_MAX_ASYNC = settings.contextualize_max_async
@@ -49,142 +46,75 @@ def _page_range(page_offsets: list[dict[str, Any]], starts: list[int], span: tup
     return {**pages, "images": images} if images else pages
 
 
-def _split_at_sheets(content: str, page_offsets: list[dict[str, Any]] | None) -> list[str]:
-    """Potong ``content`` di setiap awal sheet Excel; dokumen tanpa sheet tetap satu potongan.
-
-    Sheet adalah batas konteks yang sengaja dibuat penulisnya (satu sheet = satu provinsi,
-    satu topik), jadi overlap tidak boleh melewatinya: label sheet A yang bersebelahan dengan
-    URL sheet B membuat LLM menempelkan URL B ke A. Halaman PDF tidak dipotong, karena
-    kalimat memang menyambung antar halaman.
-    """
-    starts = [o["start"] for o in page_offsets or [] if is_sheet(o["page"])]
-    bounds = [0, *starts[1:], len(content)]
-    return [content[a:b] for a, b in zip(bounds, bounds[1:])]
-
-
-def _is_heading(line: str) -> bool:
-    """Markdown heading, atau baris pendek ALL-CAPS tanpa tanda baca akhir (bukan bullet)."""
-    line = line.strip()
-    if line.startswith("#"):
-        return re.match(r"#{1,6}\s", line) is not None
-    if not line or line[0] in "-*•" or len(line) > 150 or len(line.split()) < 2 or line.endswith((".", ",", ";", ":")):
-        return False
-    letters = [ch for ch in line if ch.isalpha()]
-    return len(letters) >= 3 and sum(ch.isupper() for ch in letters) >= 0.8 * len(letters)
-
-
-def _drop_dangling_headings(parents: list[str], overlap: int) -> list[str]:
-    """Buang heading di ekor parent bila parent berikutnya sudah memuatnya (lewat overlap).
-
-    Heading tanpa isinya di ekor chunk membuat LLM mengekstrak entity tanpa relasi,
-    sementara parent berikutnya mengekstrak entity yang sama — dengan nama lain —
-    lengkap dengan relasinya. Tidak ada teks yang hilang: hanya dibuang bila
-    teks itu juga ada di awal parent berikutnya.
-    """
-    # ponytail: heading dikenali dari bentuk teks; ganti dengan heading struktural parser bila ada false positive
-    out = list(parents)
-    for i in range(len(out) - 1):
-        lines = out[i].rstrip().split("\n")
-        tail = len(lines)
-        while tail > 0 and (not lines[tail - 1].strip() or _is_heading(lines[tail - 1])):
-            tail -= 1
-        for cut in range(tail, len(lines)):  # blok terpanjang dulu
-            block = "\n".join(lines[cut:]).strip()
-            kept = "\n".join(lines[:cut]).rstrip()
-            if block and kept.strip() and block in out[i + 1][: len(block) + overlap]:
-                out[i] = kept
-                break
-    return out
-
-
 def chunking_parent_child(
     tokenizer: Tokenizer,
     content: str,
-    parent_chunk_size: int | None = None,
-    child_chunk_size: int | None = None,
     *,
-    parent_overlap: int | None = None,
-    child_overlap: int | None = None,
-    page_offsets: list[dict[str, Any]] | None = None,
+    chunk_options: dict[str, Any] | None = None,
+    parent_max_tokens: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Split content into parent chunks, then sub-split each parent into children.
+    """Split content into parent chunks along its structure, then sub-split each parent into children.
 
-    Uses LangChain's RecursiveCharacterTextSplitter for both levels.
+    Parents come from the document's chunker (``structure.chunker_for``): one section
+    per parent, cut between paragraphs only when the section is over
+    ``parent_max_tokens``. Children are LangChain's RecursiveCharacterTextSplitter
+    over each parent's text.
 
-    ``page_offsets`` (``[{"page", "start"}]``, awal tiap halaman di ``content``) hanya
-    menambah satu kunci pada tiap child — ``sidecar={"page_start","page_end"}`` — tanpa
-    menyentuh ``content`` child sedikit pun; embedding dan retrieval tidak melihat
-    perbedaan. Child yang posisinya tidak ketemu (semestinya tidak pernah: splitter
-    hanya ``strip``) dibiarkan tanpa ``sidecar``.
+    ``chunk_options`` is what ``separate_content`` stored for ``content``:
+    ``page_offsets`` (``[{"page", "start"}]``) only add ``sidecar={"page_start",
+    "page_end"}`` to each chunk without touching its ``content``, so embedding and
+    retrieval see no difference; ``heading_offsets`` and ``layout`` pick the parent
+    boundaries. A child whose position is not found (it should never be: the splitter
+    only strips) is left without a ``sidecar``.
 
     Returns:
-        parent_chunks: list of ``{tokens, content, chunk_order_index[, sidecar]}``
+        parent_chunks: list of ``{tokens, content, chunk_order_index[, heading][, sidecar]}``
         child_chunks:  list of ``{tokens, content, chunk_order_index, parent_index[, sidecar]}``
 
-    Child menunjuk induknya lewat ``parent_index``; itulah satu-satunya tali antara
-    kedua level. Jangan kembalikan peta posisi list — ``enforce_chunk_token_limit_
-    before_embedding`` memecah child setelah tahap ini, jadi peta apa pun yang
-    dibangun di sini sudah basi sebelum dipakai.
+    ``heading`` (``{"level", "heading", "parent_headings"}``) is the parent's section
+    path, read by entity extraction; children carry none, so what retrieval shows is
+    unchanged. A child points at its parent through ``parent_index``; that is the
+    only link between the two levels. Do not return a list-position map —
+    ``enforce_chunk_token_limit_before_embedding`` splits children after this step,
+    so any map built here is stale before it is used.
     """
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-    parent_size = parent_chunk_size or PARENT_CHUNK_SIZE
-    child_size = child_chunk_size or CHILD_CHUNK_SIZE
-    p_overlap = parent_overlap if parent_overlap is not None else PARENT_CHUNK_OVERLAP
-    c_overlap = child_overlap if child_overlap is not None else CHILD_CHUNK_OVERLAP
-
-    # Estimate chars per token (rough: 4 chars/token for mixed Indonesian/English)
-    parent_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=parent_size,
-        chunk_overlap=p_overlap,
-        separators=["\n\n", "\n", ". ", " ", ""],
-    )
+    chunker = chunker_for(tokenizer, chunk_options, parent_max_tokens)
     child_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=child_size,
-        chunk_overlap=c_overlap,
+        chunk_size=CHILD_CHUNK_SIZE,
+        chunk_overlap=CHILD_CHUNK_OVERLAP,
         separators=["\n\n", "\n", ". ", " ", ""],
     )
-
-    # Split into parents
-    parent_texts = [
-        parent
-        for segment in _split_at_sheets(content, page_offsets)
-        for parent in _drop_dangling_headings(parent_splitter.split_text(segment), p_overlap)
-    ]
 
     parent_chunks: list[dict[str, Any]] = []
     child_chunks: list[dict[str, Any]] = []
 
     child_global_index = 0
-    page_starts = [o["start"] for o in page_offsets] if page_offsets else []
-    # Kursor maju: parent (dengan overlap) dan child berurutan di dalam `content`,
-    # jadi pencarian sekuensial O(n) dan potongan berulang terpetakan ke urutannya.
-    parent_cursor = 0
+    page_offsets = (chunk_options or {}).get("page_offsets") or []
+    page_starts = [o["start"] for o in page_offsets]
     unlocated = 0
 
-    for parent_idx, parent_text in enumerate(parent_texts):
-        parent_text_stripped = parent_text.strip()
-        if not parent_text_stripped:
-            continue
-
-        parent_tokens = len(tokenizer.encode(parent_text_stripped))
+    for parent_idx, parent_span in enumerate(chunker.split(content)):
+        parent_text_stripped = content[parent_span.start:parent_span.end]
         parent: dict[str, Any] = {
-            "tokens": parent_tokens,
+            "tokens": len(tokenizer.encode(parent_text_stripped)),
             "content": parent_text_stripped,
             "chunk_order_index": parent_idx,
         }
+        if parent_span.headings:
+            *outer, own = parent_span.headings
+            parent["heading"] = {
+                "level": own.level,
+                "heading": own.text,
+                "parent_headings": [h.text for h in outer],
+            }
+        if page_starts:
+            # Rentang halaman parent melebar melewati tiap child-nya; inilah
+            # yang dipakai laporan untuk merender halaman asli saat bukti
+            # yang dikembalikan adalah teks parent.
+            parent["sidecar"] = _page_range(page_offsets, page_starts, (parent_span.start, parent_span.end))
         parent_chunks.append(parent)
-
-        parent_span = _locate(content, parent_text_stripped, parent_cursor)
-        if parent_span is not None:
-            # Overlap: parent berikutnya mulai SEBELUM akhir yang ini, jadi kursor
-            # hanya maju ke awal parent ini, bukan ke akhirnya.
-            parent_cursor = parent_span[0] + 1
-            if page_starts:
-                # Rentang halaman parent melebar melewati tiap child-nya; inilah
-                # yang dipakai laporan untuk merender halaman asli saat bukti
-                # yang dikembalikan adalah teks parent.
-                parent["sidecar"] = _page_range(page_offsets, page_starts, parent_span)
         child_cursor = 0
 
         # Split parent into children
@@ -202,10 +132,10 @@ def chunking_parent_child(
                 "chunk_order_index": child_global_index,
                 "parent_index": parent_idx,
             }
-            local = _locate(parent_text_stripped, child_text_stripped, child_cursor) if parent_span else None
+            local = _locate(parent_text_stripped, child_text_stripped, child_cursor)
             if local is not None:
                 child_cursor = local[0] + 1
-                span = (parent_span[0] + local[0], parent_span[0] + local[1])
+                span = (parent_span.start + local[0], parent_span.start + local[1])
                 if page_starts:
                     child["sidecar"] = _page_range(page_offsets, page_starts, span)
             else:
@@ -219,7 +149,7 @@ def chunking_parent_child(
     logger.info(
         f"[parent-child] Split into {len(parent_chunks)} parents, "
         f"{len(child_chunks)} children "
-        f"(parent_size={parent_size}, child_size={child_size})"
+        f"({type(chunker).__name__}, parent_max_tokens={chunker.max_tokens}, child_size={CHILD_CHUNK_SIZE})"
     )
 
     return parent_chunks, child_chunks
