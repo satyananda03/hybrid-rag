@@ -116,12 +116,13 @@ class EntityConsolidator:
         logger.info(f"[{self.rag.workspace}] consolidation merged {len(report.merges)} entities")
         return report
 
-    async def merge(self, survivor: str, absorbed: str) -> None:
+    async def merge(self, survivor: str, absorbed: str, *, create_survivor: bool = False) -> None:
         """Fold ``absorbed`` into ``survivor`` in every store (flushed by the caller).
 
         Reuses the ingest merge for the node and each relation, and the purge
         removal for what is left of ``absorbed``; then repoints the per-document
-        indexes and the alias registry.
+        indexes and the alias registry. ``create_survivor`` allows a ``survivor``
+        that does not exist yet, which makes this a rename (``graph_review.py``).
         """
         from hybrid_rag.ingestion.knowledge_graph.extraction import (
             _merge_edges_then_upsert,
@@ -134,7 +135,7 @@ class EntityConsolidator:
         namespace = f"{rag.workspace}:GraphDB" if rag.workspace else "GraphDB"
         async with get_storage_keyed_lock(sorted({survivor, absorbed, *neighbours}), namespace=namespace):
             nodes = await graph.get_nodes_batch([survivor, absorbed])
-            if survivor not in nodes or absorbed not in nodes:
+            if absorbed not in nodes or (survivor not in nodes and not create_survivor):
                 logger.warning(f"consolidation: {absorbed!r} -> {survivor!r} skipped, a node is gone")
                 return
             config = rag._build_global_config()

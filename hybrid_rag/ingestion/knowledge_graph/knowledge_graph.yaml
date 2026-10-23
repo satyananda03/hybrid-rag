@@ -13,7 +13,7 @@ entity_extraction:
        - Write `description` in objective third-person Bahasa Indonesia based solely on the text, without deictic pronouns ("pasal ini", "beliau", "kami", "tersebut").
          
     2. DISAMBIGUATION & GRANULARITY RULES (CRITICAL)
-       - PERSON vs. ROLE vs. ORGANIZATION: Always split an individual's name, their job title, and their institution into separate entities:
+       - PERSON vs. ROLE vs. ORGANIZATION vs. LOCATION: Always split an individual's name, their job title, their institution, and its region into separate entities:
          * `Person`: Clean full name WITHOUT academic degrees, honorifics, or job titles (e.g., "Teuku Riefky Harsya"). Put academic titles/NIP inside `description`.
          * `Role`: Official position or committee title (e.g., "Menteri Ekonomi Kreatif", "Ketua Tim Pelaksana").
          * `Organization`: The ministry, agency, community, or business entity (e.g., "Kementerian Ekonomi Kreatif").
@@ -29,6 +29,7 @@ entity_extraction:
            - `Role` -> `Organization` (e.g., "memimpin", "bagian dari", "bertanggung jawab kepada")
            - `Organization` -> `Organization` (e.g., "berkoordinasi dengan", "membawahi", "bermitra dengan")
            - `Person` / `Role` / `Organization` -> `Regulation` / `Program` (e.g., "menetapkan", "menandatangani", "menyelenggarakan", "menyusun")
+           - `Person` / `Role` / `Organization` -> `Location` (e.g., "mewakili", "berlokasi di")
          * Legal & Regulatory Hierarchy:
            - `Regulation` -> `Regulation` (e.g., "melaksanakan", "merujuk pada", "mengubah", "mencabut")
            - `Article` -> `Regulation` (e.g., "bagian dari")
@@ -44,13 +45,14 @@ entity_extraction:
     </instructions>
 
     <entity_types>
-    Classify each entity strictly into ONE of these 8 types (if none fit, do not extract):
+    Classify each entity strictly into ONE of these 9 types (if none fit, do not extract):
 
     - Regulation: Binding legal instruments with official numbering — UU, PP, Perpres, Permen, Perban, Perda, Keputusan (Keppres/Kepmen/SK), or Surat Edaran (e.g., "UU No. 24 Tahun 2019", "PP No. 24 Tahun 2022").
     - Article: Specific "Pasal" within a regulation, ALWAYS prefixed with its parent regulation short name (e.g., "UU No. 24 Tahun 2019 - Pasal 9").
     - Subsector: The 17 official Creative Economy industry domains, ALWAYS prefixed with "Subsektor" ("Subsektor Pengembangan Permainan", "Subsektor Arsitektur", "Subsektor Desain Interior", "Subsektor Musik", "Subsektor Seni Rupa", "Subsektor Desain Produk", "Subsektor Fesyen", "Subsektor Kuliner", "Subsektor Film, Animasi, dan Video", "Subsektor Fotografi", "Subsektor Desain Komunikasi Visual", "Subsektor Televisi dan Radio", "Subsektor Kriya", "Subsektor Periklanan", "Subsektor Seni Pertunjukan", "Subsektor Penerbitan", "Subsektor Aplikasi").
-    - Organization: Formal institutions, ministries, local agencies (Dinas), state bodies, creative communities/associations, businesses/UMKM, universities, or financial institutions (e.g., "Kementerian Ekonomi Kreatif", "Komite Ekonomi Kreatif").
-    - Role: Official job positions, structural/functional titles, committee roles, or regulated professions (e.g., "Menteri Ekonomi Kreatif", "Kepala Dinas", "Kurator"). Never include human names here.
+    - Organization: Formal institutions, ministries, local agencies (Dinas), state bodies, creative communities/associations, businesses/UMKM, universities, or financial institutions (e.g., "Kementerian Ekonomi Kreatif", "Komite Ekonomi Kreatif"). Never the region itself.
+    - Location: Regions below national level (Provinsi, Kabupaten, Kota, Kecamatan, Desa) with the full prefix; expand "Kab."/"Prov." and join a separate K/K column ("Kab." + "Sambas" -> "Kabupaten Sambas").
+    - Role: Official job positions, structural/functional titles, committee roles, or regulated professions (e.g., "Menteri Ekonomi Kreatif", "Kepala Dinas", "Koordinator Kota/Kabupaten", "Kurator"). Never include human names here.
     - Person: Named individuals using their clean full name without academic degrees or job titles (e.g., "Teuku Riefky Harsya", "Budi Santoso").
     - Program: Concrete operational initiatives, strategic masterplans/roadmaps (Rindekraf), official events/festivals, funding facilities, non-law guidelines/reports, or named digital platforms/apps (e.g., "Rencana Induk Ekonomi Kreatif", "Program KaTa Kreatif", "Kharisma Event Nusantara").
     - Concept: Substantive domain concepts, legal principles, intellectual property (HKI) types, or theoretical/governance mechanisms (e.g., "Ekosistem Ekonomi Kreatif", "Kekayaan Intelektual", "Hak Cipta", "Skema Pembiayaan Berbasis Kekayaan Intelektual").
@@ -58,7 +60,7 @@ entity_extraction:
 
     <constraints>
     - SUBSTANCE: Output fewer records if the chunk lacks substance.
-    - STRICT TYPING: Only extract entities belonging to the `<entity_types>`. NEVER extract generic nouns, standalone dates, pure numbers/rupiah amounts, generic locations ("Indonesia"), or broad terms ("Pemerintah", "Masyarakat", "Pelaku Usaha", "Data").
+    - STRICT TYPING: Only extract entities belonging to the `<entity_types>`. NEVER extract generic nouns, standalone dates, pure numbers/rupiah amounts, national-level locations ("Indonesia"), or broad terms ("Pemerintah", "Masyarakat", "Pelaku Usaha", "Data", "Kabupaten/Kota", "KoKab").
     - REFERENTIAL INTEGRITY: Every relationship's `source` and `target` MUST exactly match an extracted entity `name` in this same response. Do not output duplicate, reverse-duplicate, or self-loop relationships.
     - STABLE NAMING: Name an organizational unit or plan by its short official name; put descriptive subtitles, translations or parenthetical labels in `description`, not in `name`. Never extract a heading that has no body text after it in `<input_text>`.
     - LANGUAGE: Write all descriptions and keywords in Bahasa Indonesia; keep official acronyms in ALL CAPS.
@@ -228,7 +230,10 @@ summarize_entity_descriptions:
        Stay within {summary_length} tokens while keeping depth and completeness.
 
     3. LANGUAGE
-       Write the entire summary in Bahasa Indonesia.
+       STRICTLY Write the entire summary in BAHASA INDONESIA.
+    
+    4. OUTPUT
+       NO brief sentences, NO Markdown, Plain Text Only
     </constraints>
 
   user_prompt: |

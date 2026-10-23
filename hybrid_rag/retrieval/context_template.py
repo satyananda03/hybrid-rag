@@ -30,6 +30,15 @@ Relationships :
 """
 
 
+# ``QueryParam.return_chunk_only``: sama seperti di atas tanpa <knowledge_graph>.
+TEMPLATES["chunk_only_context"] = """<context>
+<document_chunks>
+{text_chunks_str}
+</document_chunks>
+{references_block}</context>
+"""
+
+
 # Rendered only when ``QueryParam.include_citations``: one entry per (file, location).
 TEMPLATES["kg_query_references"] = """
 <references>

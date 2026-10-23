@@ -42,6 +42,11 @@ class QueryParam:
     context (satu entri per file + lokasi), dan ``data.references``. False untuk
     pemanggil yang hanya butuh teks bukti; tidak ada lookup lokasi sama sekali."""
 
+    return_chunk_only: bool = False
+    """Context hanya berisi ``<document_chunks>`` (+ references bila ada), tanpa blok
+    entitas/relasi. Murni format output: retrieval (KG + vektor) tetap sama, dan
+    ``raw_data`` tetap memuat entitas/relasi."""
+
 
 @dataclass
 class QueryResult:

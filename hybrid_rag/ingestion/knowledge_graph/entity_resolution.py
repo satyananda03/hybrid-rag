@@ -251,6 +251,20 @@ class AliasRegistry:
             {"workspace": self.workspace, "absorbed": absorbed, "survivor": survivor},
         )
 
+    async def forget(self, entities: Iterable[str]) -> None:
+        """Entities deleted for good: drop the machine (``rule``/``llm``) aliases that resolve onto them.
+
+        ``user`` aliases (YAML registry, graph review) are kept, so re-ingesting the same
+        content reuses a reviewer's decision. Not for consolidation: it removes ``absorbed``
+        but moves its aliases (:meth:`repoint`).
+        """
+        names = sorted(set(entities))
+        if names:
+            await self.db.execute(
+                SQL_TEMPLATES["delete_machine_entity_aliases"],
+                {"workspace": self.workspace, "entities": names},
+            )
+
     async def known_entities(self) -> list[tuple[str, str]]:
         """(canonical name, type) of every entity this workspace has decided on."""
         # ponytail: whole-workspace read per document; fine for thousands of entities, page or cache it if a workspace grows past ~100k

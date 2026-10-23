@@ -49,12 +49,12 @@ logger = logging.getLogger(__name__)
 PROMPTS_PATH = Path(__file__).parent / "entity_resolution.yaml"
 
 FUZZY_MIN = 90  # token_sort_ratio for spelling variants
-EMBED_MIN_SIMILARITY = 0.80  # cosine; calibrated on the benchmark (evaluation/entity_dedup_benchmark.py)
+EMBED_MIN_SIMILARITY = 0.70  # cosine; calibrated on the benchmark (evaluation/entity_dedup_benchmark.py)
 PAIRS_PER_CLUSTER = 5
 PAIRS_PER_DOCUMENT = 300
 PAIRS_PER_CALL = 40
 # Calibrated on the benchmark: every false merge the LLM made had confidence <= 0.90.
-MIN_CONFIDENCE = 0.95
+MIN_CONFIDENCE = 0.90
 DESCRIPTION_CHARS = 300
 
 # Cross-type pairs the extractor mixes up (10 of 164 benchmark positives); any
@@ -242,7 +242,7 @@ class EntityAdjudicator:
     # --- L3: candidates ---------------------------------------------------------
 
     def _propose_lexical(self, new: dict[str, Profile], known: dict[str, str]) -> list[_Pair]:
-        """Containment, spelling variants and acronyms, against new and known names.
+        """Containment, spelling variants, acronyms and admin-prefixed region names, against new and known names.
 
         One ``cdist`` per compatible-type group (C, not Python loops); acronyms are
         only tried against names that share the first letter.
@@ -291,6 +291,15 @@ class EntityAdjudicator:
                     hits = [c for c, w in singles[query[0]] if self.abbreviates(w[0], words)]
                 for c in hits:
                     add(keys[q], idx[c], "acronym", 100)
+
+            # "jambi" / "provinsi jambi": the one-word pair the containment rule skips as noise
+            by_region_name = defaultdict(list)
+            for c, choice in enumerate(choices):
+                by_region_name[_without_admin_prefix(choice)].append(c)
+            for q, query in enumerate(queries):
+                for c in by_region_name.get(_without_admin_prefix(query), ()):
+                    if choices[c] != query:
+                        add(keys[q], idx[c], "admin_prefix", 100)
         return pairs
 
     async def _propose_embedding(
@@ -349,7 +358,7 @@ class EntityAdjudicator:
         domain: DomainRegistry | None,
     ) -> list[_Pair]:
         """Drop vetoed and duplicate pairs; keep the best few per cluster and per document."""
-        rank = {"containment": 0, "spelling": 0, "acronym": 0, "embedding": 1}
+        rank = {"containment": 0, "spelling": 0, "acronym": 0, "admin_prefix": 0, "embedding": 1}
         seen, by_source = set(), defaultdict(list)
         for p in sorted(pairs, key=lambda p: (rank[p.signal], -p.score, p.source, p.other)):
             other = new.get(p.other) if p.other_is_new else targets.get(p.other)
@@ -545,6 +554,12 @@ def _tokens(name: str) -> list[str]:
 
 def _plain(name: str) -> str:
     return " ".join(_tokens(name))
+
+
+def _without_admin_prefix(plain: str) -> str:
+    """``provinsi jambi`` → ``jambi``; a name without a leading admin token is returned as is."""
+    first, _, rest = plain.partition(" ")
+    return rest if first in _ADMIN_TOKENS and rest else plain
 
 
 def _numbers(tokens: list[str]) -> list[str]:

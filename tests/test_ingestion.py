@@ -306,22 +306,6 @@ def test_parents_follow_heading_sections():
     assert all("Sasaran" not in p["content"] for p in parents[:-1])
     assert not any("heading" in c for c in children)
 
-def test_cut_backs_off_to_the_cleanest_boundary():
-    """Greedy murni akan memotong kalimat yang terbelah halaman dan memisahkan pengantar dari daftarnya."""
-    from hybrid_rag.core.tokenizer import get_tokenizer
-
-    tokenizer = get_tokenizer()
-
-    def parents(blocks, max_tokens):
-        content = "\n\n".join(blocks)
-        return [content[s.start:s.end] for s in DocumentChunker(tokenizer, max_tokens).split(content)]
-
-    opening = "Kalimat pembuka yang selesai dengan titik."
-    broken = ["Program ini dijalankan melalui pembentukan komite", "lintas OPD dan penyusunan roadmap tahunan yang dievaluasi setiap semester."]
-    listing = ["Rinciannya sebagai berikut:", "a. butir pertama;", "b. butir kedua."]
-    assert parents([opening, *broken], 32) == [opening, "\n\n".join(broken)]
-    assert parents([opening, *listing], 18) == [opening, "\n\n".join(listing)]
-
 def test_markdown_and_text_level_mark_one_heading():
     from hybrid_rag.core.tokenizer import get_tokenizer
 

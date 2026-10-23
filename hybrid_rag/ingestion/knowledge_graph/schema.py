@@ -13,6 +13,7 @@ EntityType = Literal[
     "Article",
     "Subsector",
     "Organization",
+    "Location",
     "Role",
     "Person",
     "Program",
@@ -28,7 +29,7 @@ class ExtractedEntity(BaseModel):
         )
     )
     type: EntityType = Field(
-        description="Strict classification from the 8 allowed types. Keep Person, Role, and Organization separate."
+        description="Strict classification from the 9 allowed types. Keep Person, Role, Organization, and Location separate."
     )
     description: Prose = Field(
         description=(
@@ -90,6 +91,9 @@ _TYPE_ALIASES = {
     "organisasi": "Organization",
     "lembaga": "Organization",
     "instansi": "Organization",
+    "lokasi": "Location",
+    "wilayah": "Location",
+    "daerah": "Location",
     "jabatan": "Role",
     "peran": "Role",
     "orang": "Person",

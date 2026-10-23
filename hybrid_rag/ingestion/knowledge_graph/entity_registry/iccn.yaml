@@ -7,6 +7,8 @@ global:
     aliases: [Kemenparekraf, Kemenparekraf/Baparekraf]
   - canonical: Kementerian Ekonomi Kreatif
     aliases: [Kemenekraf]
+  - canonical: Koordinator Kota/Kabupaten
+    aliases: [Korkotkab, Koordinator Korkotkab, Koordinator Kota/Kab]
 
 # by_type:
 #   program:

@@ -126,7 +126,7 @@ slide_transcription:
     2. TURN LAYOUT INTO EXPLICIT TEXT
        - Timelines, processes and flows: one line per step, in order, e.g. `- <waktu>: <langkah> — <keterangan> (pelaksana: <pihak>)`. Keep every date with the step it belongs to.
        - Legends (colors, markers, icons that carry meaning, e.g. which party runs a step): state the legend entry on an item ONLY when that item's own marker visibly matches it. An item with no marker, or a marker you cannot match with certainty, gets no legend value. Never guess, and never describe the color itself.
-       - Tables: Markdown table. Charts: title, axes, units and every data point with its value. Org charts and hierarchies: nested list.
+       - Tables: every grid (values read by row AND column: printed tables, scorecards, matrices such as years x attributes) goes ONLY into `tables`, one entry per grid, never into `markdown`. Charts: title, axes, units and every data point with its value, in `markdown`. Org charts and hierarchies: nested list, in `markdown`.
        - Logos: name the organization when its text is readable.
        - Photos: one sentence per photo, including unlabeled ones, on what is shown plus its label and any readable text inside it (banners, dates, places).
        - Headings: use only headings and labels that appear on the slide. Do not invent section headings.
@@ -136,7 +136,7 @@ slide_transcription:
 
     4. ZERO VISUAL NOISE
        - Do not describe colors, fonts, layout, decoration or backgrounds. Omit page numbers entirely.
-       - No meta phrases such as "Slide ini menampilkan" or "Gambar ini". Output the Markdown only.
+       - No meta phrases such as "Slide ini menampilkan" or "Gambar ini".
 
     5. MEANING CARRIED BY STYLE
        - When colour, bold or a marker sets some items apart and the slide names that group (a heading or legend in the same style, or a heading count that matches exactly the number of styled items), write the group in words after each member, e.g. `- Item A (program baru)`, and end with one line per group: `<group>: A, B, C`. Never let Markdown bold or italics carry meaning on their own.

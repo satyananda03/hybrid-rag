@@ -3,15 +3,9 @@
 Ports the merge rule of docling's HybridChunker (``merge_peers``) onto the flat text
 ``separate_content`` produces. A *section* is a heading plus the text under it, up to
 the next heading. Sections are never merged with each other and never overlap: a
-section that fits ``max_tokens`` becomes one parent, a larger one is cut between its
-paragraphs.
-
-One rule goes beyond docling: when a section has to be cut, the cut backs off to the
-cleanest paragraph boundary inside the parent being filled (see ``_cut_quality``).
-Parsers emit text per block and per page, so a block that ends without ``.?!`` may be
-a sentence running on into the next page, and one ending in ``:`` is a list intro.
-Cutting there would hand the LLM half a sentence, or a list without its intro, so
-such boundaries are only cut when the parent offers no other.
+section that fits ``max_tokens`` becomes one parent, a larger one is cut as docling's
+``_split_by_doc_items`` cuts it: paragraphs packed greedily, then lines, sentences and
+words for a paragraph that alone is too large.
 
 Headings come from the two standard content-list signals, whichever parser produced
 the list: ``text_level`` (persisted as ``heading_offsets``) and markdown ``#`` lines in
@@ -34,9 +28,6 @@ logger = logging.getLogger(__name__)
 PARENT_MAX_TOKENS = settings.parent_max_tokens
 
 _MARKDOWN_HEADING = re.compile(r"(?m)^(#{1,6})[ \t]+(\S.*)$")
-_PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n\s*")
-_SENTENCE_END = re.compile(r"[.?!…][\"'”’)\]]*$")
-_LIST_ITEM = re.compile(r"([a-z]{1,2}[.)]|\d+[.)]|[-•*])\s")
 
 
 class Heading(NamedTuple):
@@ -72,7 +63,7 @@ class DocumentChunker:
         self.max_tokens = max_tokens or PARENT_MAX_TOKENS
         self.page_offsets = page_offsets or []
         self.heading_offsets = heading_offsets or []
-        self._sentence_splitter = RecursiveCharacterTextSplitter(
+        self._splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.max_tokens,
             chunk_overlap=0,
             separators=["\n\n", "\n", ". ", " ", ""],
@@ -86,12 +77,10 @@ class DocumentChunker:
 
     def split(self, content: str) -> list[ParentSpan]:
         """Parent spans in document order, whitespace-trimmed, covering all of ``content``'s text."""
-        headings = self._headings(content)
-        heading_ends = {heading.end for heading in headings.values()}
         parents = (
             parent
-            for section in self._sections(content, headings)
-            for parent in self._fill(content, section, heading_ends)
+            for section in self._sections(content, self._headings(content))
+            for parent in self._fill(content, section)
         )
         return [span for span in (_trimmed(content, parent) for parent in parents) if span.start < span.end]
 
@@ -148,55 +137,47 @@ class DocumentChunker:
             _close_last(sections, lead, len(content))
         return sections
 
-    def _fill(self, content: str, section: ParentSpan, heading_ends: set[int]) -> list[ParentSpan]:
-        """The section as one parent, or, over ``max_tokens``, runs of its paragraphs.
+    def _fill(self, content: str, section: ParentSpan) -> list[ParentSpan]:
+        """The section as one parent, or, over ``max_tokens``, cut at the coarsest separator that fits.
 
-        Each run takes as many paragraphs as fit, then backs off to its cleanest
-        boundary; a paragraph that alone is over ``max_tokens`` is cut on its own.
+        Paragraphs (for Textract, one layout block each) are packed greedily, as docling's
+        ``_split_by_doc_items`` packs doc items; a paragraph that alone is over ``max_tokens``
+        falls back to lines, sentences and words.
         """
         if self._tokens(content[section.start:section.end]) <= self.max_tokens:
             return [section]
-        paragraphs = _paragraphs(content, section.start, section.end)
         parents: list[ParentSpan] = []
-        first = 0
-        while first < len(paragraphs):
-            if self._tokens(content[slice(*paragraphs[first])]) > self.max_tokens:
-                parents += [ParentSpan(a, b, section.headings) for a, b in self._pieces(content, *paragraphs[first])]
-                first += 1
-                continue
-            last = first
-            while last + 1 < len(paragraphs) and self._tokens(
-                content[paragraphs[first][0]:paragraphs[last + 1][1]]
-            ) <= self.max_tokens:
-                last += 1
-            if last + 1 < len(paragraphs):
-                last = max(
-                    range(first, last + 1),
-                    key=lambda k: (_cut_quality(content, paragraphs[k], paragraphs[k + 1], heading_ends), k),
-                )
-            parents.append(ParentSpan(paragraphs[first][0], paragraphs[last][1], section.headings))
-            first = last + 1
-        return parents
-
-    def _pieces(self, content: str, start: int, end: int) -> list[tuple[int, int]]:
-        """One paragraph over ``max_tokens``, cut at the coarsest separator that fits (line, sentence, word)."""
-        spans: list[tuple[int, int]] = []
-        cursor = start
-        for piece in self._sentence_splitter.split_text(content[start:end]):
-            pos = content.find(piece, cursor, end)
-            if pos < 0:
+        cursor = section.start
+        for piece in self._splitter.split_text(content[section.start:section.end]):
+            start = content.find(piece, cursor, section.end)
+            if start < 0:
                 # Never drop text silently: the splitter only ever returns trimmed substrings.
                 raise ValueError(f"Split piece not found in the source text after offset {cursor}")
-            spans.append((pos, pos + len(piece)))
-            cursor = pos + len(piece)
-        return spans
+            cursor = start + len(piece)
+            parents.append(ParentSpan(start, cursor, section.headings))
+        return parents
 
 
 class SlideChunker(DocumentChunker):
-    """VLM slide decks: every slide is its own section, titled or not."""
+    """VLM slide decks: every slide is exactly one parent, whatever its length or headings.
+
+    A topic split across two parents makes retrieval return only half of it, so a slide
+    is never cut, not at the ``#`` lines the VLM writes nor at ``max_tokens``. Its first
+    heading, if any, is its section path.
+    """
 
     def hard_breaks(self) -> list[int]:
         return [offset["start"] for offset in self.page_offsets]
+
+    def _sections(self, content: str, headings: dict[int, Heading]) -> list[ParentSpan]:
+        cuts = sorted({0, len(content), *self.hard_breaks()})
+        return [
+            ParentSpan(start, end, tuple(headings[pos] for pos in sorted(headings) if start <= pos < end)[:1])
+            for start, end in zip(cuts, cuts[1:])
+        ]
+
+    def _fill(self, content: str, section: ParentSpan) -> list[ParentSpan]:
+        return [section]
 
 
 class SheetChunker(DocumentChunker):
@@ -249,37 +230,6 @@ def _layout_from_pages(page_offsets: list[dict[str, Any]]) -> str:
     if any(offset.get("image") for offset in page_offsets):
         return "slides"
     return "document"
-
-
-def _paragraphs(content: str, start: int, end: int) -> list[tuple[int, int]]:
-    """Non-blank paragraphs of ``content[start:end]`` — for Textract, one layout block each."""
-    paragraphs: list[tuple[int, int]] = []
-    pos = start
-    for paragraph_break in [*_PARAGRAPH_BREAK.finditer(content, start, end), None]:
-        stop = paragraph_break.start() if paragraph_break else end
-        if content[pos:stop].strip():
-            paragraphs.append((pos, stop))
-        if paragraph_break:
-            pos = paragraph_break.end()
-    return paragraphs
-
-
-def _cut_quality(content: str, before: tuple[int, int], after: tuple[int, int], heading_ends: set[int]) -> int:
-    """How clean a cut between two paragraphs is; higher is cleaner.
-
-    2 after a finished sentence; 1 between plain blocks (list items, a title and its
-    text); 0 after a list intro (``:``) or before a lowercase run-on, a sentence broken
-    by a page; -1 right after a heading, which would leave the heading without its text.
-    """
-    text = content[slice(*before)].rstrip()
-    following = content[slice(*after)].lstrip()
-    if before[0] + len(text) in heading_ends:
-        return -1
-    if _SENTENCE_END.search(text):
-        return 2
-    if text.endswith(":") or (following[:1].islower() and not _LIST_ITEM.match(following)):
-        return 0
-    return 1
 
 
 def _titles(path: tuple[Heading, ...]) -> tuple[str, ...]:

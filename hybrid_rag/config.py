@@ -29,7 +29,7 @@ class RagSettings(BaseSettings):
     vlm_binding_host: Optional[str] = Field(default=None, validation_alias="VLM_BINDING_HOST")
     vlm_binding_api_key: Optional[str] = Field(default=None, validation_alias="VLM_BINDING_API_KEY")
     vlm_max_async: int = Field(default=3, validation_alias="VLM_MAX_ASYNC")
-    vlm_timeout: float = Field(default=120.0, validation_alias="VLM_TIMEOUT")
+    vlm_timeout: float = Field(default=300.0, validation_alias="VLM_TIMEOUT")
     max_retries: int = Field(default=5, validation_alias="MAX_RETRIES")
     embedding_binding_host: Optional[str] = Field(default=None, validation_alias="EMBEDDING_BINDING_HOST")
     embedding_binding_api_key: Optional[str] = Field(default=None, validation_alias="EMBEDDING_BINDING_API_KEY")
@@ -148,3 +148,7 @@ class RagSettings(BaseSettings):
             raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
 
 settings = RagSettings()
+settings.extract_llm_model = "moonshotai.kimi-k2.5"  # sementara: abaikan EXTRACT_LLM_MODEL di .env
+settings.top_k = 3
+settings.chunk_top_k = 7
+settings.rerank_max_async = 2

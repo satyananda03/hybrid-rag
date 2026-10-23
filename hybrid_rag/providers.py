@@ -38,6 +38,13 @@ def _accepts_temperature(model_id: str | None) -> bool:
     return not any(family in (model_id or "").lower() for family in _NO_TEMPERATURE_FAMILIES)
 
 
+def _temperature_kwargs(model_id: str | None, temperature: float | None) -> dict[str, Any]:
+    """An explicit None for families that reject the field: leaving it out lets the hook's own default (0) through."""
+    if not _accepts_temperature(model_id):
+        return {"temperature": None}
+    return {} if temperature is None else {"temperature": temperature}
+
+
 def get_llm(
     model_id: str,
     *,
@@ -47,7 +54,7 @@ def get_llm(
     max_tokens: int | None = None,
     temperature: float | None = None,
 ) -> Any:
-    extra = {"temperature": temperature} if temperature is not None and _accepts_temperature(model_id) else {}
+    extra = _temperature_kwargs(model_id, temperature)
     return _require("get_llm")(
         model_id,
         base_url=base_url,
@@ -61,7 +68,10 @@ def get_llm(
 def get_vlm(model_id: str, *, base_url: str | None, api_key: str | None, timeout: float | None = None) -> Any:
     """A vision-capable chat model, uncapped: a ``max_tokens`` cap truncates the structured output."""
     hook = _hooks["get_vlm"] or _require("get_llm")
-    return hook(model_id, base_url=base_url, api_key=api_key, timeout=timeout, max_retries=settings.max_retries, max_tokens=None)
+    return hook(
+        model_id, base_url=base_url, api_key=api_key, timeout=timeout, max_retries=settings.max_retries, max_tokens=None,
+        **_temperature_kwargs(model_id, None),
+    )
 
 def get_embeddings(model_id: str, *, base_url: str | None, api_key: str | None, timeout: float | None = None) -> Any:
     return _require("get_embeddings")(model_id, base_url=base_url, api_key=api_key, timeout=timeout, max_retries=settings.max_retries)

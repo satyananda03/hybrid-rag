@@ -188,8 +188,9 @@ def _summary_chain() -> Runnable:
         api_key=settings.extract_llm_binding_api_key,
         timeout=settings.extract_llm_timeout,
     )
+    summary = _prompt("summarize_entity_descriptions")
     summary_prompt = ChatPromptTemplate.from_messages(
-        [("human", _prompt("summarize_entity_descriptions")["user_prompt"])]
+        [("system", summary["system_prompt"]), ("human", summary["user_prompt"])]
     )
     return cached_chain(
         summary_prompt,

@@ -142,6 +142,15 @@ class _PurgeMixin:
         await asyncio.gather(*writes)
         return residual_edges
 
+    async def _delete_entities_for_good(self, entities: set[str]) -> set[tuple[str, str]]:
+        """Entities with no source (purge) or no relation (prune) left: gone from storage and from the alias registry.
+
+        Consolidation calls :meth:`_remove_entities` directly: it moves the aliases instead (``repoint``).
+        """
+        residual_edges = await self._remove_entities(entities)
+        await self.entity_aliases.forget(entities)
+        return residual_edges
+
     async def _prune_isolated_entities(self, doc_ids: list[str]) -> set[str]:
         """Delete the entities of ``doc_ids`` that ended the batch with no relationship.
 
@@ -166,7 +175,7 @@ class _PurgeMixin:
         if not isolated:
             return set()
 
-        await self._remove_entities(isolated)
+        await self._delete_entities_for_good(isolated)
         updated = {}
         for doc_id, row in zip(doc_ids, rows):
             if row and isolated & set(row.get("entity_names") or []):
@@ -444,7 +453,7 @@ class _PurgeMixin:
         if impact.entities_to_delete:
             stage("delete_entities")
             try:
-                residual_edges = await self._remove_entities(impact.entities_to_delete)
+                residual_edges = await self._delete_entities_for_good(impact.entities_to_delete)
                 if residual_edges:
                     # Relations still attached to entities being deleted: the
                     # relation step should have removed them, so this is drift.

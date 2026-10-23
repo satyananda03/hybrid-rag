@@ -478,7 +478,7 @@ async def _build_context_str(
     Build the final LLM context string. Entities/relations were already capped
     by token in ``_apply_token_truncation``; chunks are only capped by count.
     """
-    kg_context_template = TEMPLATES["kg_query_context"]
+    kg_context_template = TEMPLATES["chunk_only_context" if query_param.return_chunk_only else "kg_query_context"]
 
     # Chunk = teks asli: hanya rerank + chunk_top_k, tidak pernah dipotong per token.
     truncated_chunks = await process_chunks_unified(
@@ -545,7 +545,9 @@ async def _build_context_str(
     )
 
     # not necessary to use LLM to generate a response
-    if not entities_context and not relations_context and not chunks_context:
+    # Mode chunk-only tanpa chunk = kosong, walau KG menemukan entitas/relasi.
+    has_kg = not query_param.return_chunk_only and (entities_context or relations_context)
+    if not has_kg and not chunks_context:
         # Return empty raw data structure when no entities/relations
         empty_raw_data = convert_to_user_format(
             [],

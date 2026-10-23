@@ -247,6 +247,20 @@ TABLES = {
                     CONSTRAINT hybrid_rag_entity_alias_pk PRIMARY KEY (workspace, id)
                     )"""
     },
+    # Human review of the graph (knowledge_graph/graph_review.py): one row per edit,
+    # rename, merge or undo. changes = {"fields": {field: {before, after, was_reviewed}}, ...}.
+    "hybrid_rag_graph_edit_history": {
+        "ddl": """CREATE TABLE hybrid_rag_graph_edit_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    workspace VARCHAR(255) NOT NULL,
+                    action VARCHAR(32) NOT NULL,
+                    target VARCHAR(1024) NOT NULL,
+                    changes JSONB NOT NULL,
+                    edited_by VARCHAR(255),
+                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    undone_time TIMESTAMP(0)
+                    )"""
+    },
 }
 
 
@@ -466,6 +480,11 @@ SQL_TEMPLATES = {
                       SET canonical_entity_id=$3, update_time=CURRENT_TIMESTAMP
                       WHERE workspace=$1 AND canonical_entity_id=$2
                      """,
+    # A purge or prune deleted these entities for good: drop the machine decisions that
+    # resolve onto them. User decisions (YAML registry, graph review) are kept.
+    "delete_machine_entity_aliases": """DELETE FROM hybrid_rag_entity_alias
+                      WHERE workspace=$1 AND canonical_entity_id = ANY($2) AND source <> 'user'
+                     """,
     "get_pair_verdicts": """SELECT id, same, confidence, preferred, reason FROM hybrid_rag_entity_pair_verdict
                       WHERE workspace=$1 AND id = ANY($2)
                      """,
@@ -480,6 +499,20 @@ SQL_TEMPLATES = {
     # Every entity name the workspace has decided on: the targets Fase 2 compares against.
     "known_entity_aliases": """SELECT DISTINCT canonical_entity_id, entity_type FROM hybrid_rag_entity_alias
                       WHERE workspace=$1 AND decision = 'same'
+                     """,
+    "insert_graph_edit": """INSERT INTO hybrid_rag_graph_edit_history (workspace, action, target, changes, edited_by)
+                      VALUES ($1, $2, $3, $4, $5)
+                     """,
+    # Edits of one target still standing, newest first: graph_review's undo stack.
+    "get_graph_edits": """SELECT id, action, target, changes, edited_by, create_time FROM hybrid_rag_graph_edit_history
+                      WHERE workspace=$1 AND action=$2 AND target=$3 AND undone_time IS NULL
+                      ORDER BY id DESC
+                     """,
+    "get_graph_edit": """SELECT id, action, target, changes, edited_by, create_time, undone_time
+                      FROM hybrid_rag_graph_edit_history WHERE workspace=$1 AND id=$2
+                     """,
+    "mark_graph_edit_undone": """UPDATE hybrid_rag_graph_edit_history SET undone_time=CURRENT_TIMESTAMP
+                      WHERE workspace=$1 AND id=$2
                      """,
     "upsert_relation_chunks": """INSERT INTO hybrid_rag_relation_chunks (workspace, id, chunk_ids, count,
                       create_time, update_time)

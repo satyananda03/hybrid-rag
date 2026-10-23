@@ -3,14 +3,13 @@
 - :func:`image_analysis_chain` — sends image + prompt to the VLM (vision-capable model).
 - :func:`table_analysis_chain` — sends text-only table prompt to the extractor LLM.
 - :func:`equation_analysis_chain` — sends text-only equation prompt to the extractor LLM.
-- :func:`slide_transcription_chain` — sends a whole slide + its text layer to the VLM, returns Markdown.
+- :func:`slide_transcription_chain` — sends a whole slide + its text layer to the VLM, returns Markdown + tables.
 """
 
 from functools import cache
 from pathlib import Path
 from typing import Literal
 
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
 from pydantic import BaseModel, Field, computed_field
@@ -22,6 +21,9 @@ from hybrid_rag.core.prompts import load_prompt
 from hybrid_rag.ingestion.text_cleaning import Prose
 
 MULTIMODAL_PROMPTS_PATH = Path(__file__).resolve().parent / "multimodal.yaml"
+
+# Jawaban tabel normal cuma beberapa ratus token; batas ini bikin model yang kebablasan gagal dalam ~20 detik (lalu diulang sekali), bukan ~80 detik di 8192.
+TABLE_MAX_TOKENS = 3000
 
 # IMAGE MODALITY
 class ImageEntity(BaseModel):
@@ -123,6 +125,40 @@ class EquationAnalysis(BaseModel):
     )
     entity_info: EquationEntity
 
+# SLIDE FILE MODALITY
+class SlideTable(BaseModel):
+    caption: str = Field(
+        description="The table's own title or heading as printed on the slide; the slide title when the table has none."
+    )
+    columns: list[str] = Field(
+        description=(
+            "Column headers, left to right, exactly as printed. The first entry is the header of the row-label column, "
+            "\"\" when that cell is empty."
+        )
+    )
+    rows: list[list[str]] = Field(
+        description=(
+            "One list per row, top to bottom, one cell per column in the order of `columns`; \"\" for an empty cell. "
+            "Keep units and footnote markers (*, **) in the cell where they are printed."
+        )
+    )
+    footnotes: list[str] = Field(
+        default_factory=list,
+        description="Notes and source lines printed for this table (e.g. '*) Data dari BPS', 'Sumber: BPS 2025'), verbatim.",
+    )
+
+class SlideTranscription(BaseModel):
+    markdown: Prose = Field(
+        description="All slide content that is not inside `tables`, as Markdown following the instructions. Never repeat a table cell here."
+    )
+    tables: list[SlideTable] = Field(
+        default_factory=list,
+        description=(
+            "Every grid on the slide: values read by row AND column, i.e. cells aligned under shared column headers and beside shared row labels (printed tables, scorecards, matrices such as years x attributes). "
+            "NOT tables: charts, org charts, flows, timelines drawn along a line, plain lists, or cards without shared headers. "
+            "Empty when the slide has no grid."
+        ),
+    )
 
 def _chat_prompt(target: str, *, with_image: bool) -> ChatPromptTemplate:
     cfg = load_prompt(target, MULTIMODAL_PROMPTS_PATH)
@@ -158,7 +194,7 @@ def _extract_llm_table() -> Runnable:
         base_url=settings.extract_llm_binding_host,
         api_key=settings.extract_llm_binding_api_key,
         timeout=settings.extract_llm_timeout,
-        max_tokens=settings.extract_llm_max_tokens,
+        max_tokens=TABLE_MAX_TOKENS,
     ).with_structured_output(TableAnalysis)
 
 
@@ -175,11 +211,12 @@ def _extract_llm_equation() -> Runnable:
 
 @cache
 def slide_transcription_chain() -> Runnable:
-    """Vision chain for one whole slide: Markdown text that is ingested as ordinary text."""
+    """Vision chain for one whole slide: Markdown text plus each grid as a structured table."""
     return cached_chain(
         _chat_prompt("slide_transcription", with_image=True),
-        _vlm() | StrOutputParser(),
+        _vlm().with_structured_output(SlideTranscription),
         cache_type="vlm",
+        output_model=SlideTranscription,
         model_id=settings.vlm_model,
     )
 

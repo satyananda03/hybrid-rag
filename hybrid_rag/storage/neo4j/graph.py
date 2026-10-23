@@ -453,17 +453,17 @@ class Neo4JStorage(BaseGraphStorage):
             seen_nodes, seen_edges = set(), set()
             for info in records[0]["node_info"]:
                 node = info["node"]
-                if node.id not in seen_nodes:
-                    seen_nodes.add(node.id)
+                if node.element_id not in seen_nodes:
+                    seen_nodes.add(node.element_id)
                     result.nodes.append(KnowledgeGraphNode(
-                        id=f"{node.id}", labels=[node.get("entity_id")], properties=_node_props(node)
+                        id=f"{node.element_id}", labels=[node.get("entity_id")], properties=_node_props(node)
                     ))
             for rel in records[0]["relationships"]:
-                if rel.id not in seen_edges:
-                    seen_edges.add(rel.id)
+                if rel.element_id not in seen_edges:
+                    seen_edges.add(rel.element_id)
                     result.edges.append(KnowledgeGraphEdge(
-                        id=f"{rel.id}", type=rel.type, source=f"{rel.start_node.id}",
-                        target=f"{rel.end_node.id}", properties=dict(rel),
+                        id=f"{rel.element_id}", type=rel.type, source=f"{rel.start_node.element_id}",
+                        target=f"{rel.end_node.element_id}", properties=dict(rel),
                     ))
             logger.info(
                 f"[{self.workspace}] Subgraph query successful | Node count: {len(result.nodes)} | "

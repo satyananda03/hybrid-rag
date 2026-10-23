@@ -210,6 +210,11 @@ def _parse_mm_display_name(content: str, fallback: str) -> str:
     return fallback
 
 
+def _reviewed(record: dict | None) -> frozenset[str]:
+    """Fields a human review locked (``graph_review.py``): merge and rebuild keep the stored value."""
+    return frozenset((record or {}).get("reviewed_fields") or ())
+
+
 async def _handle_entity_relation_summary(
     description_type: str,
     entity_or_relation_name: str,
@@ -701,6 +706,7 @@ async def rebuild_knowledge_from_chunks(
     relation_chunks_storage: BaseKVStorage | None = None,
     doc_status_storage: BaseKVStorage | None = None,
     entity_resolver: EntityResolver | None = None,
+    entities_from_relationships: bool = True,
 ) -> None:
     """Rebuild entity and relationship descriptions from cached extraction results with parallel processing
 
@@ -726,6 +732,9 @@ async def rebuild_knowledge_from_chunks(
             against it, so the rebuild reproduces what extraction kept
         entity_resolver: Maps the re-parsed raw names onto the canonical names
             ingest wrote (registry lookup only), so they match ``entities_to_rebuild``
+        entities_from_relationships: An entity absent from its cached extractions
+            is summarised from its relationships; ``False`` leaves it as stored
+            (undo of a graph review, ``graph_review.py``)
     """
     if not entities_to_rebuild and not relationships_to_rebuild:
         return
@@ -887,6 +896,7 @@ async def rebuild_knowledge_from_chunks(
                         llm_response_cache=llm_response_cache,
                         global_config=global_config,
                         entity_chunks_storage=entity_chunks_storage,
+                        from_relationships=entities_from_relationships,
                     )
                     rebuilt_entities_count += 1
                 except Exception as e:
@@ -1197,6 +1207,7 @@ async def _rebuild_single_entity(
     llm_response_cache: BaseKVStorage,
     global_config: dict[str, str],
     entity_chunks_storage: BaseKVStorage | None = None,
+    from_relationships: bool = True,
 ) -> None:
     """Rebuild a single entity from cached extraction results.
 
@@ -1209,6 +1220,7 @@ async def _rebuild_single_entity(
     current_entity = await knowledge_graph_inst.get_node(entity_name)
     if not current_entity:
         return
+    locked = _reviewed(current_entity)
 
     # Helper function to update entity in both graph and vector storage
     async def _update_entity_storage(
@@ -1305,6 +1317,9 @@ async def _rebuild_single_entity(
         all_entity_data.extend(chunk_entities.get(unit_id, {}).get(entity_name, []))
 
     if not all_entity_data:
+        if not from_relationships:
+            logger.info(f"No entity data found for `{entity_name}`, kept as stored")
+            return
         logger.warning(
             f"No entity data found for `{entity_name}`, trying to rebuild from relationships"
         )
@@ -1334,7 +1349,7 @@ async def _rebuild_single_entity(
         description_list = list(dict.fromkeys(relationship_descriptions))
 
         # Generate final description from relationships or fallback to current
-        if description_list:
+        if description_list and "description" not in locked:
             final_description, _ = await _handle_entity_relation_summary(
                 "Entity",
                 entity_name,
@@ -1400,12 +1415,12 @@ async def _rebuild_single_entity(
     # Get most common entity type
     entity_type = (
         max(set(entity_types), key=entity_types.count)
-        if entity_types
+        if entity_types and "entity_type" not in locked
         else current_entity.get("entity_type", "UNKNOWN")
     )
 
     # Generate final description from entities or fallback to current
-    if description_list:
+    if description_list and "description" not in locked:
         final_description, _ = await _handle_entity_relation_summary(
             "Entity",
             entity_name,
@@ -1466,6 +1481,7 @@ async def _rebuild_single_relationship(
     current_relationship = await knowledge_graph_inst.get_edge(src, tgt)
     if not current_relationship:
         return
+    locked = _reviewed(current_relationship)
 
     # normalized_chunk_ids = merge_source_ids([], chunk_ids)
     normalized_chunk_ids = chunk_ids
@@ -1550,14 +1566,14 @@ async def _rebuild_single_relationship(
 
     combined_keywords = (
         ", ".join(set(keywords))
-        if keywords
+        if keywords and "keywords" not in locked
         else current_relationship.get("keywords", "")
     )
 
     weight = sum(weights) if weights else current_relationship.get("weight", 1.0)
 
     # Generate final description from relations or fallback to current
-    if description_list:
+    if description_list and "description" not in locked:
         final_description, _ = await _handle_entity_relation_summary(
             "Relation",
             f"{src}-{tgt}",
@@ -1854,6 +1870,7 @@ async def _merge_nodes_then_upsert(
     source_id = GRAPH_FIELD_SEP.join(source_ids)
 
     # 6.2 Finalize entity type by highest count
+    locked = _reviewed(already_node)
     entity_type = sorted(
         Counter(
             [dp["entity_type"] for dp in nodes_data] + already_entity_types
@@ -1861,6 +1878,8 @@ async def _merge_nodes_then_upsert(
         key=lambda x: x[1],
         reverse=True,
     )[0][0]
+    if "entity_type" in locked:
+        entity_type = already_node["entity_type"]
 
     # 7. Deduplicate nodes by description, keeping first occurrence in the same document
     unique_nodes = {}
@@ -1891,14 +1910,17 @@ async def _merge_nodes_then_upsert(
                 )
 
     # 8. Get summary description an LLM usage status
-    description, llm_was_used = await _handle_entity_relation_summary(
-        "Entity",
-        entity_name,
-        description_list,
-        GRAPH_FIELD_SEP,
-        global_config,
-        llm_response_cache,
-    )
+    if "description" in locked:
+        description, llm_was_used = already_node["description"], False
+    else:
+        description, llm_was_used = await _handle_entity_relation_summary(
+            "Entity",
+            entity_name,
+            description_list,
+            GRAPH_FIELD_SEP,
+            global_config,
+            llm_response_cache,
+        )
 
     # 9. Build file_path within MAX_FILE_PATHS
     file_paths_list = []
@@ -2054,6 +2076,13 @@ async def _merge_edges_then_upsert(
     if src_id == tgt_id:
         return None
     relation_key = f"{src_id}->{tgt_id}"
+    # Entities merge first (phase 1), so an endpoint missing here was never extracted
+    # as an entity — only named in a relationship. Skip the edge rather than create
+    # an UNKNOWN-typed placeholder node for it.
+    for endpoint in (src_id, tgt_id):
+        if await knowledge_graph_inst.get_node(endpoint) is None:
+            logger.info(f"Skipping relation `{relation_key}`: `{endpoint}` was not extracted as an entity")
+            return None
 
     already_edge = None
     already_weights = []
@@ -2211,6 +2240,9 @@ async def _merge_edges_then_upsert(
         await _cooperative_yield(i, every=32)
     # Join all unique keywords with commas
     keywords = ",".join(sorted(all_keywords))
+    locked = _reviewed(already_edge)
+    if "keywords" in locked:
+        keywords = already_edge["keywords"]
 
     # 7. Deduplicate by description, keeping first occurrence in the same document
     unique_edges = {}
@@ -2241,14 +2273,17 @@ async def _merge_edges_then_upsert(
                 )
 
     # 8. Get summary description an LLM usage status
-    description, llm_was_used = await _handle_entity_relation_summary(
-        "Relation",
-        f"({src_id}, {tgt_id})",
-        description_list,
-        GRAPH_FIELD_SEP,
-        global_config,
-        llm_response_cache,
-    )
+    if "description" in locked:
+        description, llm_was_used = already_edge["description"], False
+    else:
+        description, llm_was_used = await _handle_entity_relation_summary(
+            "Relation",
+            f"({src_id}, {tgt_id})",
+            description_list,
+            GRAPH_FIELD_SEP,
+            global_config,
+            llm_response_cache,
+        )
 
     # 9. Build file_path within MAX_FILE_PATHS limit
     file_paths_list = []

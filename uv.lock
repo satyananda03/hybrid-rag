@@ -611,6 +611,7 @@ dependencies = [
     { name = "sastrawi" },
     { name = "tenacity" },
     { name = "tiktoken" },
+    { name = "unoserver" },
 ]
 
 [package.optional-dependencies]
@@ -667,6 +668,7 @@ requires-dist = [
     { name = "sastrawi", specifier = ">=1.0.1" },
     { name = "tenacity" },
     { name = "tiktoken" },
+    { name = "unoserver", specifier = "==3.4" },
     { name = "unoserver", marker = "extra == 'ingestion'", specifier = "==3.4" },
     { name = "unstructured", extras = ["docx", "xlsx"], marker = "extra == 'ingestion'", specifier = ">=0.27.25" },
 ]
