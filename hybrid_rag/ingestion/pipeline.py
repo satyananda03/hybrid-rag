@@ -1550,7 +1550,7 @@ class _PipelineMixin:
 
         try:
             # Contextualize children using parent context (LLM). Runs on
-            # its own model and concurrency cap — see chunking/parent_child.
+            # its own model and concurrency cap — see chunking/contextualize.
             progress.stage("contextualize")
             # Each child is embedded as soon as its context is written, not
             # after the slowest child: the embedding queue is the bottleneck

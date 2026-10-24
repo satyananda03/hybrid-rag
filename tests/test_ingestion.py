@@ -108,15 +108,14 @@ def test_office_files_are_converted_then_take_the_pdf_route(tmp_path, monkeypatc
     async def fake_convert(path):
         outdir.mkdir()
         return str(make_pdf(outdir / f"{Path(path).stem}.pdf", [page]))
-    async def fake_textract(path, output_file):
-        seen["textract"] = Path(path)
-        return {}
+    async def fake_textract(path, tmp_dir):
+        seen["textract"] = path
+        return [{"type": "text", "text": "isi"}]
     async def fake_slides(path, tmp_dir, entity_registry=None):
         seen["slides"] = path
         return [{"type": "text", "text": "slide", "page_idx": 0}]
     monkeypatch.setattr(router, "convert_office_to_pdf", fake_convert)
-    monkeypatch.setattr(router, "parse_document_to_json", fake_textract)
-    monkeypatch.setattr(router, "reconstruct_content_list", lambda raw, output_file: [{"type": "text", "text": "isi"}])
+    monkeypatch.setattr(router, "parse_pdf_document", fake_textract)
     monkeypatch.setattr(router, "parse_slides", fake_slides)
     content_list = parse(source)
     assert list(seen) == [route] and seen[route].suffix == ".pdf"
@@ -127,17 +126,16 @@ def test_pdf_goes_through_textract_then_hosting_and_cleans_up(tmp_path, monkeypa
     pdf = tmp_path / "a.pdf"
     pdf.write_bytes(b"%PDF-1.4")
     seen = {}
-    async def fake_textract(path, output_file):
-        seen["path"], seen["tmp_dir"] = path, Path(output_file).parent
-        return {"raw": True}
-    monkeypatch.setattr(router, "parse_document_to_json", fake_textract)
-    monkeypatch.setattr(router, "reconstruct_content_list", lambda raw, output_file: [{"type": "text", "text": "isi"}])
+    async def fake_textract(path, tmp_dir):
+        seen["path"], seen["tmp_dir"] = path, tmp_dir
+        return [{"type": "text", "text": "isi"}]
+    monkeypatch.setattr(router, "parse_pdf_document", fake_textract)
     async def go():
         async with router.parse_file(pdf) as content_list:
             assert seen["tmp_dir"].exists()  # still there while the caller inserts
             return content_list
     assert asyncio.run(go()) == [{"type": "text", "text": "isi", "layout": "document"}]
-    assert seen["path"] == str(pdf) and len(hosted) == 1
+    assert seen["path"] == pdf and len(hosted) == 1
     assert not seen["tmp_dir"].exists()
 
 def test_text_files_are_not_hosted(tmp_path, hosted):
@@ -616,20 +614,20 @@ def test_slides_get_the_acronyms_their_text_layer_mentions(tmp_path, monkeypatch
 
 
 def test_contextualize_gets_the_acronyms_of_the_parent(monkeypatch):
-    from hybrid_rag.ingestion.chunking import parent_child
+    from hybrid_rag.ingestion.chunking import contextualize
 
     seen = []
     class Chain:
         async def ainvoke(self, inputs):
             seen.append(inputs["glossary"])
             return "konteks"
-    monkeypatch.setattr(parent_child, "contextualize_chain", lambda: Chain())
+    monkeypatch.setattr(contextualize, "contextualize_chain", lambda: Chain())
     parents = [{"content": "DATA JEJARING ICCN BANTEN"}, {"content": "tanpa akronim"}]
     children = [{"content": "a", "parent_index": 0, "chunk_order_index": 0},
                 {"content": "b", "parent_index": 1, "chunk_order_index": 1}]
-    asyncio.run(parent_child.contextualize_children(parents, children, entity_registry="iccn"))
+    asyncio.run(contextualize.contextualize_children(parents, children, entity_registry="iccn"))
     assert "ICCN = Indonesia Creative Cities Network" in seen[0] and seen[1] == ""
-    asyncio.run(parent_child.contextualize_children(parents, children))
+    asyncio.run(contextualize.contextualize_children(parents, children))
     assert seen[2:] == ["", ""]
 
 
@@ -673,11 +671,11 @@ def test_coverage_counts_text_layer_words_in_the_transcript():
 
 
 def test_slide_decks_skip_textract_and_are_hosted(tmp_path, monkeypatch, hosted):
-    async def fake_textract(path, output_file):
+    async def fake_textract(path, tmp_dir):
         raise AssertionError("dek slide tidak boleh ke Textract")
     async def fake_slides(path, tmp_dir, entity_registry=None):
         return [{"type": "text", "text": "slide", "page_idx": 0, "img_path": str(tmp_dir / "slide_0.jpg")}]
-    monkeypatch.setattr(router, "parse_document_to_json", fake_textract)
+    monkeypatch.setattr(router, "parse_pdf_document", fake_textract)
     monkeypatch.setattr(router, "parse_slides", fake_slides)
     content_list = parse(make_pdf(tmp_path / "deck.pdf", [(1440, 810)]))
     assert [i["text"] for i in content_list] == ["slide"] and hosted == [content_list]

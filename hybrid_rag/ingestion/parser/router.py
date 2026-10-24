@@ -10,7 +10,7 @@ from hybrid_rag import progress
 from hybrid_rag.ingestion.knowledge_graph.entity_resolution import load_entity_registry
 from hybrid_rag.ingestion.parser.figures import fit_figures, host_figures
 from hybrid_rag.ingestion.parser.office.office_to_pdf import SUPPORTED_EXTENSIONS as OFFICE_EXTENSIONS, convert_office_to_pdf
-from hybrid_rag.ingestion.parser.pdf.amazon_textract import parse_document_to_json, reconstruct_content_list
+from hybrid_rag.ingestion.parser.pdf.amazon_textract import parse_pdf as parse_pdf_document
 from hybrid_rag.ingestion.parser.pdf.slides import is_slide_deck, parse_slides
 from hybrid_rag.ingestion.parser.spreadsheet.parser import parse_xlsx
 
@@ -47,14 +47,10 @@ def _with_layout(content_list: list[dict], layout: str) -> list[dict]:
     return content_list
 
 async def _parse_pdf(path: Path, tmp_dir: Path, entity_registry: str | None = None, slides: bool = False) -> list[dict]:
-    """Dek slide → VLM per slide; selain itu Textract (TEXTRACT_MODE: async/sync), lalu content list dari blocks."""
+    """Dek slide → VLM per slide; selain itu parser PDF dokumen (``parse_pdf_document``, kini Textract)."""
     if slides or is_slide_deck(path):
         return _with_layout(await parse_slides(path, tmp_dir, entity_registry), "slides")
-    raw_parse = await parse_document_to_json(str(path), output_file=str(tmp_dir / "raw_parsing_result.json"))
-    content_list = await asyncio.to_thread(
-        reconstruct_content_list, raw_parse, output_file=str(tmp_dir / "formatted_parsing_result.json")
-    )
-    return _with_layout(content_list, "document")
+    return _with_layout(await parse_pdf_document(path, tmp_dir), "document")
 
 async def _parse_office(path: Path, tmp_dir: Path, entity_registry: str | None = None) -> list[dict]:
     """docx/pptx/… → PDF lewat unoserver, lalu jalur PDF. pptx selalu dek slide, apa pun rasio halamannya

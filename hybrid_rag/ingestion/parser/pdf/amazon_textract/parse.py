@@ -1,12 +1,17 @@
-"""Orkestrasi PDF → raw JSON Textract: cek kualitas → Blocks per halaman (sync atau async) → raw JSON."""
+"""Orkestrasi PDF → raw JSON Textract: cek kualitas → Blocks per halaman (sync atau async) → raw JSON.
+
+``parse_pdf`` adalah pintu masuk parser ini (``contract.PdfDocumentParser``): raw JSON → content list.
+"""
 import asyncio
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from pathlib import Path
 from hybrid_rag import progress
 from hybrid_rag.config import settings
+from hybrid_rag.ingestion.parser.pdf.contract import ContentItem
 from .async_job import analyze_job
+from .content_list import reconstruct_content_list
 from .pages import split_pdf_pages
 from .quality import check_effective_dpi
 from .textract_api import TextractPageError, analyze_page, get_client
@@ -88,3 +93,11 @@ async def parse_document_to_json(
     if failed_pages:
         raise TextractPageError(failed_pages)
     return raw_data
+
+
+async def parse_pdf(path: Path, tmp_dir: Path) -> list[ContentItem]:
+    """PDF → content list lewat Textract; raw dan formatted JSON serta crop figure ditulis di ``tmp_dir``."""
+    raw_parse = await parse_document_to_json(str(path), output_file=str(tmp_dir / "raw_parsing_result.json"))
+    return await asyncio.to_thread(
+        reconstruct_content_list, raw_parse, output_file=str(tmp_dir / "formatted_parsing_result.json")
+    )
