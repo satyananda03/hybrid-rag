@@ -88,31 +88,7 @@ async def contextualize_children(
     on_contextualized: Callable[[dict[str, Any]], None] | None = None,
     entity_registry: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Contextualize each child chunk using its parent as context via LLM.
-
-    ``on_contextualized`` is called with each child as soon as its context is
-    written, so the caller can start work on it (embedding) without waiting
-    for the slowest child.
-
-    Runs on :data:`contextualize_chain` against ``CONTEXTUALIZE_LLM_*`` — a
-    model chosen for prompt caching, which is why this step has its own chain
-    and its own model, endpoint, key and timeout rather than sharing the
-    extraction ones.
-
-    Always runs — there is no off switch. A child chunk without its parent's
-    context is what retrieval was failing on, so skipping this step silently
-    degrades every downstream answer. For the same reason a chunk whose context
-    still cannot be produced after the client's retries fails the whole call
-    (and with it the document) instead of falling back to its bare content.
-
-    ``entity_registry`` adds its acronyms that the parent mentions (see
-    ``acronym_glossary``); placed after the document block, so the cached
-    prefix stays the same for every child of a parent.
-
-    Raises:
-        ContextualizationError: a child could not be contextualized; carries
-            the child's index. The remaining calls are cancelled.
-    """
+    """Contextualize each child chunk using its parent as context via LLM."""
     concurrency = max_concurrent or CONTEXTUALIZE_MAX_ASYNC
     semaphore = asyncio.Semaphore(concurrency)
 
