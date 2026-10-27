@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { nodeDisplayName, nodeSearchText } from '@/features/knowledge_graph/graph'
 import { useKnowledgeGraphStore } from '@/features/knowledge_graph/store'
 
 const MAX_RESULTS = 50
@@ -21,7 +22,7 @@ export function GraphSearch() {
       : []
     const matchedIds = new Set(resultIds)
     const middleMatches = rawGraph.nodes
-      .filter((node) => !matchedIds.has(node.id) && `${node.id} ${node.labels.join(' ')}`.toLowerCase().includes(normalized.toLowerCase()))
+      .filter((node) => !matchedIds.has(node.id) && nodeSearchText(node).toLowerCase().includes(normalized.toLowerCase()))
       .map((node) => node.id)
 
     return [...resultIds, ...middleMatches]
@@ -50,6 +51,6 @@ export function GraphSearch() {
       className="w-full rounded border border-outline-variant/50 bg-surface-container-low px-2 py-1.5 text-sm text-on-surface outline-none focus:border-primary"
       placeholder="Find a node"
     />
-    {isOpen && results.length > 0 && <div className="absolute z-30 mt-1 max-h-72 w-full overflow-y-auto rounded border border-outline-variant/50 bg-surface-container-high shadow-xl">{results.map((node) => <button key={node.id} type="button" onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => focusNode(node.id)} onClick={() => selectResult(node.id)} className="block w-full truncate px-2 py-1.5 text-left text-xs text-on-surface hover:bg-surface-variant">{node.labels.join(', ') || node.id}</button>)}</div>}
+    {isOpen && results.length > 0 && <div className="absolute z-30 mt-1 max-h-72 w-full overflow-y-auto rounded border border-outline-variant/50 bg-surface-container-high shadow-xl">{results.map((node) => <button key={node.id} type="button" onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => focusNode(node.id)} onClick={() => selectResult(node.id)} className="block w-full truncate px-2 py-1.5 text-left text-xs text-on-surface hover:bg-surface-variant">{nodeDisplayName(node)}</button>)}</div>}
   </div>
 }

@@ -138,8 +138,9 @@ def _page_items(page_data: dict, data: dict, images_dir: str) -> list:
     footer_bboxes = [b["Geometry"]["BoundingBox"] for b in ordered_children if b["BlockType"] == "LAYOUT_FOOTER"]
     table_blocks = [b for b in blocks if b["BlockType"] == "TABLE"]
     used_table_ids = set()
-    # Render hanya halaman yang punya figure lolos filter (piksel = render lama)
-    page_image = functools.cache(lambda: render_page_image(data["source_pdf"], page_idx).convert("RGB"))
+    # Render hanya halaman yang punya figure lolos filter (piksel = render lama).
+    # enhance=False: crop untuk VLM tetap berwarna, tanpa halo unsharp (lihat render_page_image).
+    page_image = functools.cache(lambda: render_page_image(data["source_pdf"], page_idx, enhance=False).convert("RGB"))
 
     items = []
     for block in ordered_children:

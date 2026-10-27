@@ -255,30 +255,37 @@ function GraphCanvas({
       edgeTarget = graph.target(activeEdge)
     }
 
+    const focusNodeReducer = nodeFocusValid || edgeFocusValid ? (node: string, data: NodeDisplayData) => {
+      const next = { ...data, highlighted: false, labelColor: LABEL_COLOR_DARK }
+      if (nodeFocusValid) {
+        if (node === activeNode || neighbours.has(node)) {
+          next.highlighted = true
+          next.labelColor = LABEL_COLOR_HIGHLIGHTED_DARK
+          if (node === selectedNode) next.borderColor = NODE_BORDER_COLOR_SELECTED
+        } else {
+          next.color = NODE_COLOR_DISABLED
+        }
+      } else if (edgeFocusValid) {
+        if (node === edgeSource || node === edgeTarget) {
+          next.highlighted = true
+          next.size = 3
+          next.labelColor = LABEL_COLOR_HIGHLIGHTED_DARK
+        } else {
+          next.color = NODE_COLOR_DISABLED
+        }
+      }
+      return next
+    } : null
+    // A hidden entity type wins over focus styling; sigma also drops its edges.
+    const hiddenTypes = new Set(settings.hiddenEntityTypes)
+
     setSettings({
       enableEdgeEvents: effectiveEdgeEvents,
       renderLabels: settings.showLabels && graph.order <= LABEL_PERFORMANCE_LIMIT,
       renderEdgeLabels: settings.showEdgeLabels && graph.size <= EDGE_PERFORMANCE_LIMIT,
-      nodeReducer: nodeFocusValid || edgeFocusValid ? (node, data) => {
-        const next = { ...data, highlighted: false, labelColor: LABEL_COLOR_DARK }
-        if (nodeFocusValid) {
-          if (node === activeNode || neighbours.has(node)) {
-            next.highlighted = true
-            next.labelColor = LABEL_COLOR_HIGHLIGHTED_DARK
-            if (node === selectedNode) next.borderColor = NODE_BORDER_COLOR_SELECTED
-          } else {
-            next.color = NODE_COLOR_DISABLED
-          }
-        } else if (edgeFocusValid) {
-          if (node === edgeSource || node === edgeTarget) {
-            next.highlighted = true
-            next.size = 3
-            next.labelColor = LABEL_COLOR_HIGHLIGHTED_DARK
-          } else {
-            next.color = NODE_COLOR_DISABLED
-          }
-        }
-        return next
+      nodeReducer: hiddenTypes.size > 0 || focusNodeReducer ? (node, data) => {
+        if (hiddenTypes.has(data.entityType)) return { ...data, hidden: true }
+        return focusNodeReducer ? focusNodeReducer(node, data) : data
       } : null,
       edgeReducer: nodeFocusValid || edgeFocusValid ? (edge, data) => {
         const next = { ...data, hidden: false, labelColor: LABEL_COLOR_DARK, color: EDGE_COLOR_DARK }
@@ -297,7 +304,7 @@ function GraphCanvas({
         return next
       } : null,
     })
-  }, [effectiveEdgeEvents, focusedEdge, focusedNode, graph, selectedEdge, selectedNode, setSettings, settings.hideUnselectedEdges, settings.showEdgeLabels, settings.showLabels])
+  }, [effectiveEdgeEvents, focusedEdge, focusedNode, graph, selectedEdge, selectedNode, setSettings, settings.hiddenEntityTypes, settings.hideUnselectedEdges, settings.showEdgeLabels, settings.showLabels])
 
   // Edge sizes are baked in at graph-build time (see sigmaGraphFromRaw), so
   // no separate effect mutates edge attributes here — mutating edges on a

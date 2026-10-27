@@ -1,5 +1,6 @@
 import { useMemo, type ReactNode } from 'react'
 import { GitBranchPlus, Scissors, X } from 'lucide-react'
+import { nodeDisplayName } from '@/features/knowledge_graph/graph'
 import { selectedElement, useKnowledgeGraphStore } from '@/features/knowledge_graph/store'
 
 // Panel ini read-only: backend sengaja tidak punya rute tulis graph (edit entity,
@@ -32,10 +33,7 @@ export function GraphProperties({ onExpand }: GraphPropertiesProps) {
       .map((edge) => {
         const neighbourId = edge.source === element.element.id ? edge.target : edge.source
         const neighbour = rawGraph.nodes.find((node) => node.id === neighbourId)
-        const label = neighbour
-          ? String(neighbour.properties.entity_id ?? neighbour.labels.join(', ') ?? neighbourId)
-          : neighbourId
-        return { id: neighbourId, label }
+        return { id: neighbourId, label: neighbour ? nodeDisplayName(neighbour) : neighbourId }
       })
     : []
 

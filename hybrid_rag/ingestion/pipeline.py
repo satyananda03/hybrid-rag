@@ -1481,15 +1481,15 @@ class _PipelineMixin:
         # persisted; parents feed extraction and are then discarded,
         # with source_ids redirected onto the children further below.
         from hybrid_rag.ingestion.chunking import (
-            chunking_parent_child,
+            ParentChildChunker,
             contextualize_children,
             redirect_source_ids,
         )
         from hybrid_rag.ingestion.chunking.parent_child import (
             CHILD_CHUNK_SIZE,
             CHILD_CHUNK_OVERLAP,
+            PARENT_MAX_TOKENS,
         )
-        from hybrid_rag.ingestion.chunking.structure import PARENT_MAX_TOKENS
 
         chunk_options = (content_data or {}).get("chunk_options") or {}
         # Recorded on ``doc_status.metadata['chunk_opts']`` via
@@ -1503,9 +1503,7 @@ class _PipelineMixin:
 
         progress.stage("chunk")
         logger.info(f"Chunking parent-child, doc_id: {doc_id}")
-        parent_result, child_result = chunking_parent_child(
-            self.tokenizer, content, chunk_options=chunk_options
-        )
+        parent_result, child_result = ParentChildChunker(self.tokenizer).split(content, chunk_options)
 
         # === Parent-Child storage & extraction === #
         # Parent dipakai untuk ekstraksi entitas, dan — bila ``save_parent`` —

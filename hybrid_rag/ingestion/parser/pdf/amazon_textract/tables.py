@@ -20,7 +20,9 @@ def build_table_markdown(table_block: dict, block_map: dict) -> str:
         if 0 <= r < max_row and 0 <= col < max_col:
             text = get_plain_text(c, block_map).replace("|", "/").replace("\n", " ")
             entity_types = c.get("EntityTypes", [])
-            if "TABLE_SECTION_TITLE" in entity_types:
+            if not text:
+                pass  # sel kosong: tanpa penanda bold, bukan "****"
+            elif "TABLE_SECTION_TITLE" in entity_types:
                 # Penanda Bold untuk Table Section Title
                 text = f"**{text}**"
             elif "COLUMN_HEADER" in entity_types:

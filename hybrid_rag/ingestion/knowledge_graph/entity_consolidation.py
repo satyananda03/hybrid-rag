@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass, field
 
 from hybrid_rag.core.base import DocStatus
-from hybrid_rag.core.constants import GRAPH_FIELD_SEP
+from hybrid_rag.core.constants import DB_SCHEMA_ENTITY_TYPES, GRAPH_FIELD_SEP
 from hybrid_rag.core.source_ids import make_relation_chunk_key
 from hybrid_rag.core.utils import compute_mdhash_id
 from hybrid_rag.ingestion.knowledge_graph.entity_adjudication import (
@@ -52,6 +52,9 @@ from hybrid_rag.storage.shared import get_storage_keyed_lock
 logger = logging.getLogger(__name__)
 
 MAX_PAIRS = 2000  # per run; the verdict store makes the next run start where this one stopped
+# Database-schema entities are unique by construction (fully qualified names), so
+# they have no duplicates to fold; merging two look-alike columns would corrupt them.
+_UNMERGEABLE_TYPES = _MULTIMODAL_TYPES | DB_SCHEMA_ENTITY_TYPES
 _IN_FLIGHT = [DocStatus.PENDING, DocStatus.PARSING, DocStatus.PROCESSING]
 
 @dataclass(frozen=True)
@@ -190,7 +193,7 @@ class EntityConsolidator:
         graph = self.rag.chunk_entity_relation_graph
         nodes = [n for n in await graph.get_all_nodes()
                  if n.get("id") and match_key(n["id"])
-                 and type_key(n.get("entity_type", "")) not in _MULTIMODAL_TYPES]
+                 and type_key(n.get("entity_type", "")) not in _UNMERGEABLE_TYPES]
         names = [n["id"] for n in nodes]
         chunks = await self.rag.entity_chunks.get_by_ids(names) if names else []
         degrees = await graph.node_degrees_batch(names) if names else {}

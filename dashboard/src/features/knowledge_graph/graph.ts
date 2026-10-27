@@ -1,6 +1,6 @@
 import { MultiUndirectedGraph } from 'graphology'
 import { resolveNodeColor } from './graphColor'
-import type { KnowledgeGraphResponse } from './types'
+import type { KnowledgeGraphNode, KnowledgeGraphResponse } from './types'
 import type { EdgeDisplayData, NodeDisplayData, RawEdge, RawGraph, RawNode } from './store'
 
 // Matches graph_ui/src/lib/constants.ts (minNodeSize/maxNodeSize) exactly so
@@ -20,6 +20,17 @@ export function hashPosition(id: string): { x: number; y: number } {
     right = Math.imul(right ^ char, 1597334677)
   }
   return { x: (left >>> 0) / 4294967296, y: (right >>> 0) / 4294967296 }
+}
+
+// `labels` holds the entity name, which the API is queried by; `display_name`
+// (set by the database-schema pipeline) is the business name to show instead.
+export function nodeDisplayName(node: KnowledgeGraphNode): string {
+  const displayName = node.properties.display_name
+  return (typeof displayName === 'string' && displayName) || node.labels.join(', ') || node.id
+}
+
+export function nodeSearchText(node: KnowledgeGraphNode): string {
+  return `${node.id} ${node.labels.join(' ')} ${nodeDisplayName(node)}`
 }
 
 function normalizeNode(node: RawNode): RawNode {
@@ -110,11 +121,12 @@ export function sigmaGraphFromRaw(raw: RawGraph, edgeSizeRange: EdgeSizeRange = 
     graph.addNode(node.id, {
       x: node.x ?? initialPosition.x,
       y: node.y ?? initialPosition.y,
-      label: node.labels.join(', ') || node.id,
+      label: nodeDisplayName(node),
       color,
       labelColor: color,
       size,
       borderColor: NODE_BORDER_COLOR,
+      entityType: resolved.key,
     })
   }
 

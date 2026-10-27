@@ -60,7 +60,7 @@ class RagSettings(BaseSettings):
     min_rerank_score: float = Field(default=0.0, validation_alias="MIN_RERANK_SCORE")
     rerank_by_default: bool = Field(default=True, validation_alias="RERANK_BY_DEFAULT")
     enable_llm_cache: bool = Field(default=True, validation_alias="ENABLE_LLM_CACHE")
-    parent_max_tokens: int = Field(default=2048, validation_alias="PARENT_MAX_TOKENS")
+    parent_chunk_size: int = Field(default=2048, validation_alias="PARENT_CHUNK_SIZE")
     child_chunk_size: int = Field(default=310, validation_alias="CHILD_CHUNK_SIZE")
     child_chunk_overlap: int = Field(default=50, validation_alias="CHILD_CHUNK_OVERLAP")
     contextualize_llm_model: Optional[str] = Field(default=None, validation_alias="CONTEXTUALIZE_LLM_MODEL")

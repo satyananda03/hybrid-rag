@@ -22,3 +22,6 @@ examples/extracted_images/
 
 # entity dedup benchmark output (contains corpus entity names)
 evaluation/results/
+
+# audit_agent_demo.ipynb: storage pageindex, teks berkas, cache hasil
+.audit_cache/

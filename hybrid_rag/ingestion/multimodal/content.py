@@ -314,7 +314,7 @@ def separate_content(
           halaman dek slide.
         - ``heading_offsets``: ``[{"start", "end", "level"}]`` tiap item dengan
           ``text_level``, dari parser mana pun.
-        - ``layout``: jenis dokumen yang dicap router (``chunking.structure.CHUNKERS``).
+        - ``layout``: jenis dokumen yang dicap router (``chunking.parent_child.CHUNKERS``).
     """
     text_parts = []
     text_pages = []

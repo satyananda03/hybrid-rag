@@ -1,6 +1,7 @@
 import MiniSearch from 'minisearch'
 import { create } from 'zustand'
 import type { Attributes } from 'graphology-types'
+import { nodeSearchText } from './graph'
 import type { KnowledgeGraphEdge, KnowledgeGraphNode } from './types'
 
 export interface RawNode extends KnowledgeGraphNode {
@@ -28,6 +29,7 @@ export interface NodeDisplayData extends Attributes {
   size: number
   borderColor: string
   highlighted?: boolean
+  entityType: string // normalized, as keyed in typeColors
 }
 
 export interface EdgeDisplayData extends Attributes {
@@ -55,6 +57,7 @@ export interface GraphSettings {
   enableEdgeEvents: boolean
   minEdgeSize: number
   maxEdgeSize: number
+  hiddenEntityTypes: string[] // typeColors keys toggled off in the legend
 }
 
 interface KnowledgeGraphState {
@@ -102,6 +105,7 @@ const defaultSettings: GraphSettings = {
   label: '*', maxDepth: 3, maxNodes: 3000, showLabels: true, showEdgeLabels: false,
   showLegend: false, showProperties: true, showSearch: true, enableDrag: true,
   hideUnselectedEdges: true, enableEdgeEvents: false, minEdgeSize: 1, maxEdgeSize: 5,
+  hiddenEntityTypes: [],
 }
 
 const createSearchIndex = (rawGraph: RawGraph | null) => {
@@ -109,7 +113,7 @@ const createSearchIndex = (rawGraph: RawGraph | null) => {
   const index = new MiniSearch<{ id: string; label: string }>({
     idField: 'id', fields: ['label'], searchOptions: { prefix: true, fuzzy: 0.2 },
   })
-  index.addAll(rawGraph.nodes.map((node) => ({ id: node.id, label: `${node.id} ${node.labels.join(' ')}` })))
+  index.addAll(rawGraph.nodes.map((node) => ({ id: node.id, label: nodeSearchText(node) })))
   return index
 }
 

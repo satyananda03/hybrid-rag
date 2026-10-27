@@ -6,6 +6,15 @@
 export const DEFAULT_NODE_COLOR = '#5D6D7E'
 
 const TYPE_SYNONYMS: Record<string, string> = {
+  // Written by the database-schema pipeline (hybrid_rag/core/constants.py).
+  db_database: 'db_database',
+  db_schema: 'db_schema',
+  db_domain: 'db_domain',
+  db_table: 'db_table',
+  db_column: 'db_column',
+  db_business_concept: 'db_business_concept',
+  db_value: 'db_value',
+
   unknown: 'unknown',
   未知: 'unknown',
 
@@ -160,7 +169,14 @@ const NODE_TYPE_COLORS: Record<string, string> = {
   artifact: '#21759B',
   naturalobject: '#bcd98a',
   other: '#efd98a',
-  unknown: '#00A3AC'
+  unknown: '#00A3AC',
+  db_database: '#8E24AA',
+  db_schema: '#BA68C8',
+  db_domain: '#FFB300',
+  db_table: '#1565C0',
+  db_column: '#90CAF9',
+  db_business_concept: '#E91E63',
+  db_value: '#9E9D24'
 }
 
 const EXTENDED_COLORS = [
@@ -181,6 +197,8 @@ const PREDEFINED_COLOR_SET = new Set(Object.values(NODE_TYPE_COLORS))
 
 interface ResolveNodeColorResult {
   color: string
+  // The normalized type: the legend's entry and the type filter's key.
+  key: string
   map: Map<string, string>
   updated: boolean
 }
@@ -195,14 +213,14 @@ export function resolveNodeColor(
   const cacheKey = standardType || normalizedType
 
   if (typeColorMap.has(cacheKey)) {
-    return { color: typeColorMap.get(cacheKey) || DEFAULT_NODE_COLOR, map: typeColorMap, updated: false }
+    return { color: typeColorMap.get(cacheKey) || DEFAULT_NODE_COLOR, key: cacheKey, map: typeColorMap, updated: false }
   }
 
   if (standardType) {
     const color = NODE_TYPE_COLORS[standardType] || DEFAULT_NODE_COLOR
     const newMap = new Map(typeColorMap)
     newMap.set(standardType, color)
-    return { color, map: newMap, updated: true }
+    return { color, key: cacheKey, map: newMap, updated: true }
   }
 
   const usedExtendedColors = new Set(
@@ -213,5 +231,5 @@ export function resolveNodeColor(
 
   const newMap = new Map(typeColorMap)
   newMap.set(normalizedType, color)
-  return { color, map: newMap, updated: true }
+  return { color, key: cacheKey, map: newMap, updated: true }
 }

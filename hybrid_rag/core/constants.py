@@ -25,6 +25,21 @@ DEFAULT_HEADING_LEVEL_MAX_CHARS = 80
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
 GRAPH_FIELD_SEP = "<SEP>"
 
+# Entity types written by the database-schema pipeline (ingestion/db_schema).
+# Stored on nodes, so renaming one orphans the rows already written. Never plain
+# "table": that type belongs to the multimodal pipeline (entity_resolution).
+DB_ENTITY_DATABASE = "db_database"
+DB_ENTITY_SCHEMA = "db_schema"
+DB_ENTITY_TABLE = "db_table"
+DB_ENTITY_COLUMN = "db_column"
+DB_ENTITY_CONCEPT = "db_business_concept"
+DB_ENTITY_DOMAIN = "db_domain"
+DB_ENTITY_VALUE = "db_value"
+DB_SCHEMA_ENTITY_TYPES = frozenset({
+    DB_ENTITY_DATABASE, DB_ENTITY_SCHEMA, DB_ENTITY_TABLE, DB_ENTITY_COLUMN,
+    DB_ENTITY_CONCEPT, DB_ENTITY_DOMAIN, DB_ENTITY_VALUE,
+})
+
 SOURCE_IDS_LIMIT_METHOD_KEEP = "KEEP"
 SOURCE_IDS_LIMIT_METHOD_FIFO = "FIFO"
 VALID_SOURCE_IDS_LIMIT_METHODS = {

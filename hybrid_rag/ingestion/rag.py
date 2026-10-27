@@ -44,6 +44,7 @@ from hybrid_rag.ingestion.pipeline import _PipelineMixin
 from hybrid_rag.storage.neo4j import Neo4JStorage
 from hybrid_rag.storage.postgres import PGDocStatusStorage, PGKVStorage, PGVectorStorage
 from hybrid_rag.ingestion.deletion.deletion import _DeletionMixin
+from hybrid_rag.ingestion.db_schema.ingest import _DbSchemaMixin
 from hybrid_rag.ingestion.knowledge_graph.purge import _PurgeMixin
 from hybrid_rag.ingestion.insert import _IngestionMixin
 from hybrid_rag.ingestion.multimodal.analyze import _AnalyzeMixin
@@ -68,6 +69,7 @@ class IngestionRAG(
     _AnalyzeMixin,
     _PurgeMixin,
     _DeletionMixin,
+    _DbSchemaMixin,
 ):
     """Graph + vector RAG over PostgreSQL and Neo4j, with multimodal ingestion.
 

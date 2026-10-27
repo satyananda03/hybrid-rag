@@ -9,6 +9,7 @@ import logging
 from hybrid_rag import progress
 from hybrid_rag.ingestion.knowledge_graph.entity_resolution import load_entity_registry
 from hybrid_rag.ingestion.parser.figures import fit_figures, host_figures
+from hybrid_rag.ingestion.parser.image.parse import IMAGE_EXTENSIONS, parse_image
 from hybrid_rag.ingestion.parser.office.office_to_pdf import SUPPORTED_EXTENSIONS as OFFICE_EXTENSIONS, convert_office_to_pdf
 from hybrid_rag.ingestion.parser.pdf.amazon_textract import parse_pdf as parse_pdf_document
 from hybrid_rag.ingestion.parser.pdf.slides import is_slide_deck, parse_slides
@@ -36,7 +37,7 @@ def _read_content_list(path: Path) -> list[dict]:
     return data
 
 def _with_layout(content_list: list[dict], layout: str) -> list[dict]:
-    """Tandai item teks dengan layout dokumen — kunci ``chunking.structure.CHUNKERS``.
+    """Tandai item teks dengan layout dokumen — kunci ``chunking.parent_child.CHUNKERS``.
 
     Hanya router yang tahu sebuah PDF menjadi dek slide atau dokumen biasa, jadi di
     sinilah layout dicatat. Nilai yang sudah dibawa content list (prebuilt) dihormati.
@@ -64,6 +65,9 @@ async def _parse_office(path: Path, tmp_dir: Path, entity_registry: str | None =
 async def _parse_xlsx(path: Path, tmp_dir: Path, entity_registry: str | None = None) -> list[dict]:
     return _with_layout(await asyncio.to_thread(parse_xlsx, path, tmp_dir / "images"), "sheet")
 
+async def _parse_image(path: Path, tmp_dir: Path, entity_registry: str | None = None) -> list[dict]:
+    return _with_layout(await parse_image(path, tmp_dir), "document")
+
 async def _read_text(path: Path, tmp_dir: Path, entity_registry: str | None = None) -> list[dict]:
     return _with_layout(await asyncio.to_thread(_read_text_document, path), "document")
 
@@ -78,6 +82,7 @@ PARSERS = {
     "pdf": (_parse_pdf, True),
     **{ext: (_parse_office, True) for ext in OFFICE_EXTENSIONS},
     "xlsx": (_parse_xlsx, True),
+    **{ext: (_parse_image, True) for ext in IMAGE_EXTENSIONS},
     "md": (_read_text, False),
     "markdown": (_read_text, False),
     "txt": (_read_text, False),

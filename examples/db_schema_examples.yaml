@@ -1,0 +1,2939 @@
+name: iccn_data_lake
+description: |-
+  Data terpusat ICCN (Indonesia Creative Cities Network).
+  - TIDAK tersedia: data keuangan ICCN (dana hibah, pencairan/penyaluran dana, anggaran ICCN). Kolom total_budget/funding_sources di detail_program_ip_event hanyalah anggaran festival yang diisi pendaftar, bukan dana ICCN.
+domains:
+- name: Berita & Event
+  description: Judul, isi, views, dan status publikasi berita ada di fact_berita; jadwal dan lokasi event ada di fact_event. Kategori konten (Artikel/Berita/Event/Talkshow) ada di dim_kategori.
+- name: Member ICCN
+  description: Profil member/pelaku ekonomi kreatif di ICCN (nama, domisili kota/provinsi, subsektor ekraf, bio) ada di dim_user.
+- name: Pelaku Ekraf Sulawesi Tenggara
+  description: Data usaha, pemilik, lokasi (provinsi/kabupaten/kecamatan sudah di kolomnya sendiri, tanpa dim_wilayah), dan subsektor pelaku ekraf ada di fact_pelaku_ekraf; HKI (Hak Kekayaan Intelektual) yang dimiliki pelaku ekraf ada di bridge_pelaku_hki.
+- name: Jejaring ICCN Daerah
+  description: Sebaran jejaring per wilayah (korda, ketua, status tumbuh/tidak aktif) ada di fact_sebaran_jejaring.
+- name: Partisipasi Program
+  description: Data pendaftar Open Call (riset, IP, festival, korporat, narasi media, dll.) dan program pendataan lain ada di fact_partisipasi_program, dibedakan lewat kolom jenis_program.
+- name: Insight IKM & UMKM
+  description: Statistik jumlah dan performa Industri Kecil Menengah (fact_insight_ikm) dan UMKM (fact_insight_umkm) per wilayah.
+- name: Knowledge Base
+  description: Daftar dokumen yang masuk ke knowledge ICCN (sumber Notion, Google Drive, Database, Document Upload) ada di iccn_knowledge_stats.
+- name: Dimensi Waktu & Wilayah
+  description: Gunakan dim_waktu untuk agregasi berdasarkan hari/bulan/kuartal/tahun; dim_wilayah untuk daftar wilayah.
+schemas:
+  iccn_dwh:
+    name: iccn_dwh
+    tables:
+      bridge_pelaku_hki:
+        name: bridge_pelaku_hki
+        schema_name: iccn_dwh
+        label: HKI Pelaku Ekraf
+        domain: Pelaku Ekraf Sulawesi Tenggara
+        description: |-
+          Tabel relasi (bridge table) antara pelaku ekraf dengan hak kekayaan intelektual (HKI) yang dimilikinya.
+          Gunakan JOIN ke fact_pelaku_ekraf ON sumber_pelaku_id = fact_pelaku_ekraf.sumber_id untuk mengetahui data usaha pemilik HKI.
+        primary_keys:
+        - bridge_id
+        foreign_keys: []
+        columns:
+        - name: bridge_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: sumber_pelaku_id
+          description: ID pelaku ekraf, merujuk ke kolom sumber_id pada tabel fact_pelaku_ekraf
+          type: BIGINT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: jenis_hki
+          description: 'Nama jenis hak kekayaan intelektual (contoh: Paten, Hak Cipta, Merek)'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Desain Tata Letak Sirkuit Terpadu
+          - Hak Cipta
+          - Indikasi Geografis
+          - Merek
+          - Paten
+          - Rahasia Dagang
+      detail_program_corporate_partner:
+        name: detail_program_corporate_partner
+        schema_name: iccn_dwh
+        label: Detail Open Call Corporate Partner
+        domain: Partisipasi Program
+        description: 'Tabel yang menyimpan data perusahaan, institusi bisnis, dan organisasi profesional yang mendaftar untuk kolaborasi dalam pengembangan ekosistem kota/kabupaten kreatif Indonesia. Cakupan informasi: - Identitas Organisasi: Nama perusahaan/organisasi (organization_name), bentuk badan usaha (entity_type), bidang usaha/industri (business_field), domisili kota/kabupaten (city), cakupan wilayah operasional (operational_area), serta profil singkat (organization_profile) dan website. - Minat & Bentuk Kolaborasi: Fokus bidang kolaborasi yang diminati (collaboration_focuses), bentuk kolaborasi yang ditawarkan (collaboration_types), wilayah fokus kolaborasi (collaboration_regions), durasi kolaborasi (collaboration_duration), gagasan spesifik kolaborasi dengan ICCN (collaboration_idea), dan ekspektasi dampak (expected_impact). - Pengalaman Sebelumnya: Status kepemilikan pengalaman kolaborasi sebelumnya (previous_collaboration_types - boolean), serta deskripsi singkat mengenai pengalaman tersebut (previous_collaboration_description). - Data Penanggung Jawab (PIC): Nama lengkap (pic_name), jabatan (pic_position), email (pic_email), dan nomor telepon/WhatsApp (pic_phone). NOTES : - JANGAN gunakan operator @> untuk JSONB array.  - Selalu cast menjadi text dan gunakan ILIKE untuk pencarian case-insensitive (misal: collaboration_types::text ILIKE ''''%pengembangan program bersama%'''').'
+        primary_keys:
+        - detail_id
+        foreign_keys:
+        - constrained_columns:
+          - partisipasi_id
+          referred_table: fact_partisipasi_program
+          referred_schema: iccn_dwh
+          referred_columns:
+          - partisipasi_id
+          name: detail_program_corporate_partner_partisipasi_id_fkey
+        columns:
+        - name: detail_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: partisipasi_id
+          description: |-
+            ID partisipasi, foreign key ke fact_partisipasi_program.partisipasi_id. Satu baris = satu pendaftar program Open Call Corporate Partner (mitra korporasi).
+            Gunakan JOIN ke fact_partisipasi_program ON partisipasi_id = fact_partisipasi_program.partisipasi_id untuk mengambil nama pendaftar, institusi, peran, provinsi, kota, email, phone, dan tanggal daftar.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys:
+          - referred_table: fact_partisipasi_program
+            referred_schema: iccn_dwh
+            referred_columns:
+            - partisipasi_id
+            name: detail_program_corporate_partner_partisipasi_id_fkey
+        - name: entity_type
+          description: Bentuk Badan Usaha
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - PT
+          - CV
+          - Firma
+          - Yayasan / Organisasi
+          - Institusi pendidikan
+        - name: business_field
+          description: 'Bidang Usaha / Industri Contoh data : Industri Kreatif'
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Industri Kreatif
+          - Teknologi & Digital
+          - Keuangan & Perbangkan
+          - Energi & Lingkungan
+          - Infrastruktur & Properti
+          - Pendidikan
+        - name: operational_area
+          description: 'Wilayah Operasional Perusahaan NOTES : Gunakan exact match!'
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Lokal
+          - Regional
+          - Nasional
+          - Internasional
+        - name: website
+          description: Website / Profil Organisasi
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: organization_profile
+          description: Profil Singkat Organisasi
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: collaboration_focuses
+          description: Bidang kolaborasi yang diminati perusahaan (fokus kolaborasi) Disimpan dalam format JSON array of strings.
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - pengembangan program kota kreatif
+          - pengembangan subsektor ekonomi kreatif
+          - inovasi kota dan urban development
+          - riset dan pengetahuan ekonomi kreatif
+          - pengembangan kapasitas komunitas kreatif
+          - penguatan jejaring kota/kabupaten kreatif
+          - inisiatif sosial berbasis ekonomi kreatif
+        - name: collaboration_types
+          description: 'Bentuk kolaborasi yang diminati perusahaan Disimpan dalam format JSON array of strings. Contoh data : ["dukungan terhadap inisiatif kota kreatif", "pengembangan program bersama"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - pengembangan program bersama
+          - dukungan terhadap inisiatif kota kreatif
+          - kolaborasi riset atau knowledge program
+          - pengembangan platform atau ekosistem kreatif
+          - kemitraan jangka panjang dalam pengembangan program
+          - bentuk kolaborasi lain
+        - name: collaboration_regions
+          description: Kota/wilayah yang menjadi fokus kolaborasi
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: collaboration_duration
+          description: Durasi kolaborasi yang diminati
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: previous_collaboration_description
+          description: Deskripsi singkat pengalaman kolaborasi sebelumnya
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: collaboration_idea
+          description: Gagasan kolaborasi dengan ICCN (inisiatif atau program apa yang ingin dikembangkan bersama)
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: expected_impact
+          description: Kontribusi apa yang dapat diberikan kolaborasi ini bagi pengembangan kota/kabupaten kreatif di Indonesia
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: is_terms_agreed
+          description: Persetujuan pernyataan
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: previous_collaboration_types
+          description: Apakah perusahaan memiliki pengalaman kolaborasi dengan Komunitas Kreatif, Pemerintah Daerah, Program Sosial atau Pembangunan Kota, ataupun Institusi Pendidikan/Riset sebelumnya
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+      detail_program_festival:
+        name: detail_program_festival
+        schema_name: iccn_dwh
+        label: Detail Open Call Festival
+        domain: Partisipasi Program
+        description: 'Tabel yang menyimpan data pendaftaran festival untuk memetakan, mendampingi, dan mengembangkan festival berbasis potensi lokal Cakupan informasi: - Identitas & Detail Festival: Nama festival (festival_name), tingkatan (festival_level), riwayat penyelenggaraan (first_year, current_edition), lokasi (province, city, main_venue), waktu & durasi (event_date, duration), serta media sosial (social_media). - Data Penyelenggara & Kelembagaan: Bentuk kelembagaan (institutional_form), tahun berdiri (established_year), alamat sekretariat (secretariat_address), status badan hukum (has_legal_ownership, legal_ownership_file), mitra utama (main_partner), serta data penanggung jawab (pic_name, pic_email, pic_phone). - Konsep & Latar Belakang: Kategori latar belakang (background_of_festival - JSONB), deskripsi latar belakang (background_desc), keunikan festival (uniqueness), dan status kepemilikan tema tahunan (has_an_annual_theme). - Kegiatan & Sistem Kerja: Jenis kegiatan utama (main_activities - JSONB), jumlah kegiatan (total_activities), serta sistem kerja kolektif (collective_work_system - JSONB). - Keterlibatan Ekosistem: Keterlibatan komunitas lokal (involves_local_community, involves_local_community_as_collab), pelibatan seniman/profesional (involves_artists), jumlah pelaku kreatif/UMKM (total_creative_professionals), dan estimasi pengunjung (estimated_visitors). - Lampiran & Harapan: File dokumentasi (festival_documentation_file), file proposal (festival_proposal_file), serta harapan terhadap jejaring ICCN (iccn_network_expectations). - Metadata: Timestamp standar (created_at, updated_at, deleted_at). NOTES : - JANGAN gunakan operator @> untuk JSONB array. Selalu cast menjadi text dan gunakan ILIKE untuk pencarian case-insensitive'
+        primary_keys:
+        - detail_id
+        foreign_keys:
+        - constrained_columns:
+          - partisipasi_id
+          referred_table: fact_partisipasi_program
+          referred_schema: iccn_dwh
+          referred_columns:
+          - partisipasi_id
+          name: detail_program_festival_partisipasi_id_fkey
+        columns:
+        - name: detail_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: partisipasi_id
+          description: |-
+            ID partisipasi, foreign key ke fact_partisipasi_program.partisipasi_id. Satu baris = satu pendaftar program Open Call Festival.
+            Gunakan JOIN ke fact_partisipasi_program ON partisipasi_id = fact_partisipasi_program.partisipasi_id untuk mengambil nama pendaftar, institusi, peran, provinsi, kota, email, phone, dan tanggal daftar.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys:
+          - referred_table: fact_partisipasi_program
+            referred_schema: iccn_dwh
+            referred_columns:
+            - partisipasi_id
+            name: detail_program_festival_partisipasi_id_fkey
+        - name: festival_name
+          description: Nama festival
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: first_year
+          description: Kapan tahun pertama diadakan festival
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: current_edition
+          description: Edisi ke berapa tahun ini
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: festival_level
+          description: 'Tingkatan festival  Nilai string yang valid persis seperti berikut (tanpa angka dan penjelasan): - "National" - "Internasional" - "Provinsi" - "Kab/Kota"'
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Internasional
+          - Kab/Kota
+          - Nasional
+          - Provinsi
+        - name: main_venue
+          description: Lokasi utama festival
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: event_date
+          description: Waktu penyelenggaraan
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: duration
+          description: Durasi penyelenggaraan festival
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: social_media
+          description: Media sosial festival
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: institutional_form
+          description: 'Bentuk Kelembagaan penyelenggara (pilihan : komunitas, yayasan, perkumpulan, badan usaha)'
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - badan_usaha
+          - Badan Usaha
+          - Dewan Kesenian Pinrang / Sanggar Seni Lasinrang
+          - Komite
+          - komunitas
+          - Komunitas
+          - Lembaga Pendidikan Tinggi Negeri
+          - lembaga seni budaya muslimin indonesia (LESBUMI)
+          - perkumpulan
+          - Perkumpulan
+          - yayasan
+          - Yayasan
+        - name: established_year
+          description: Tahun berdirinya penyelenggara
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: secretariat_address
+          description: Alamat sekretariat penyelenggara
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: has_legal_ownership
+          description: Kepemilikan badan hukum bagi penyelenggara, True jika memiliki badan hukum
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: legal_ownership_file
+          description: File bukti kepemilikan badan hukum, wajib dijoin menjadi https://iccn-s3-bucket.s3.ap-southeast-1.amazonaws.com/{legal_ownership_file}
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: main_partner
+          description: Mitra utama festival
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: background_of_festival
+          description: 'Kategori latar belakang festival Disimpan dalam format JSON array of strings. Contoh data : ["Pelestarian Budaya", "Ruang ekspresi", "Pelestarian lingkungan", "Ekonomi kreatif", "Sosial"] NOTES : Jika query user TIDAK ADA di daftar nilai tersebut, WAJIB cast kolom ke text sebelum pakai ILIKE'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Pelestarian budaya
+          - Ruang ekspresi
+          - Pelestarian lingkungan
+          - Ekonomi kreatif
+          - Sosial
+        - name: background_desc
+          description: Deskripsi latar belakang festival dan keterkaitan dengan identitas lokal
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: uniqueness
+          description: Deskripsi keunikan/uniqueness festival dibanding festival lain
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: has_an_annual_theme
+          description: Apakah festival memiliki tema tahunan, True jika iya
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: main_activities
+          description: 'Jenis kegiatan utama festival Disimpan dalam format JSON array of strings. Contoh data : ["Pertunjukan seni", "Pameran seni/kriya"] NOTES : Jika query user TIDAK ADA di daftar nilai tersebut, WAJIB cast kolom ke text sebelum pakai ILIKE'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Pertunjukan seni
+          - Pameran seni/kriya
+          - Kuliner
+          - Musik
+          - Film
+          - Workshop
+          - Diskusi/forum
+          - Aktivasi ruang publik
+        - name: total_activities
+          description: Jumlah total kegiatan dalam rangkaian festival
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: collective_work_system
+          description: 'Sistem kerja festival secara kolektif Disimpan dalam format JSON array of strings. Contoh data : ["Gotong Royong", "Kolaborasi antar komunitas"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Gotong royong
+          - Kolaborasi antar komunitas
+          - Hiring EO/Profesional
+        - name: involves_local_community
+          description: Apakah festival melibatkan komunitas lokal?, True jika iya
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: involves_artists
+          description: Apakah festival melibatkan seniman nasional/internasional?, True jika iya
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: involves_local_community_as_collab
+          description: Apakah festival melibatkan masyarakat sekitar sebagai kolaborator?, True jika iya
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: estimated_visitors
+          description: Estimasi jumlah pengunjung
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: total_creative_professionals
+          description: Jumlah pelaku kreatif/UMKM yang terlibat
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: festival_documentation_file
+          description: dokumen dokumentasi festival, wajib dijoin menjadi https://iccn-s3-bucket.s3.ap-southeast-1.amazonaws.com/{festival_documentation_file}
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: festival_proposal_file
+          description: dokumen proposal festival, wajib dijoin menjadi https://iccn-s3-bucket.s3.ap-southeast-1.amazonaws.com/{festival_proposal_file}
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: iccn_network_expectations
+          description: Harapan jika festival ini terhubung dengan ICCN
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+      detail_program_ip:
+        name: detail_program_ip
+        schema_name: iccn_dwh
+        label: Detail Open Call Intellectual Property
+        domain: Partisipasi Program
+        description: 'Tabel yang menyimpan daftar Kekayaan Intelektual (Intellectual Property (IP)) dari kreator, komunitas, studio kreatif, dan pelaku ekonomi kreatif di ICCN.  Cakupan Informasi :  - Identitas Pendaftar: Nama pendaftar (fullname), nama tim/studio/komunitas (team_name), email, kontak WhatsApp (phone), serta lokasi asal (province, city).  - Detail & Karakteristik IP: Nama IP (ip_name), deskripsi (ip_description), keunikan (ip_uniqueness), kategori IP (ip_category), subsektor utama (main_subsector), subsektor pendukung (supporting_subsectors), target audiens (target_audience), dan nilai yang ditawarkan (ip_values).  - Status & Legalitas: Tahap pengembangan IP (development_stage), rencana masa depan (development_plan), dan status pendaftaran Hak Cipta/HAKI (is_copyright_registered) beserta buktinya.  - Dampak & Harapan Kolaborasi: Potensi dampak ke kota kreatif (ip_potential_impact, ip_locality_connection), bentuk dukungan yang diharapkan dari ICCN (expected_support), dan keterbukaan kolaborasi (collaboration_status).  - Lampiran & Tautan: File portofolio (portfolio_files, portfolio_link), bukti HAKI (copyright_evidence_files), link berita (news_links), dan media sosial (website_social_links).'
+        primary_keys:
+        - detail_id
+        foreign_keys:
+        - constrained_columns:
+          - partisipasi_id
+          referred_table: fact_partisipasi_program
+          referred_schema: iccn_dwh
+          referred_columns:
+          - partisipasi_id
+          name: detail_program_ip_partisipasi_id_fkey
+        columns:
+        - name: detail_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: partisipasi_id
+          description: |-
+            ID partisipasi, foreign key ke fact_partisipasi_program.partisipasi_id. Satu baris = satu pendaftar program Open Call Intellectual Property (IP).
+            Gunakan JOIN ke fact_partisipasi_program ON partisipasi_id = fact_partisipasi_program.partisipasi_id untuk mengambil nama pendaftar, institusi, peran, provinsi, kota, email, phone, dan tanggal daftar.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys:
+          - referred_table: fact_partisipasi_program
+            referred_schema: iccn_dwh
+            referred_columns:
+            - partisipasi_id
+            name: detail_program_ip_partisipasi_id_fkey
+        - name: ip_name
+          description: Nama Intelektual Property (IP) yang diajukan
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: ip_category
+          description: 'Kategori Intelektual Property (IP) Nilai string yang valid persis seperti berikut (tanpa angka dan penjelasan): - "KARAKTER & CERITA" (konteks: karakter, maskot kota, komik, animasi, cerita bergambar) - "PRODUK & DESAIN" (konteks: kriya, fashion, desain produk dengan narasi IP) - "KONTEN & MEDIA" (konteks: film, musik, pertunjukan, podcast, konten digital, format program) - "TEKNOLOGI & INTERAKTIF" (konteks: game, aplikasi, immersive experience, instalasi interaktif) - "LAYANAN & PLATFORM" (konteks: format event, platform distribusi konten, model program kreatif, creative service IP). Contoh data : LAYANAN & PLATFORM'
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - KARAKTER & CERITA
+          - KONTEN & MEDIA
+          - LAYANAN & PLATFORM
+          - PRODUK & DESAIN
+          - TEKNOLOGI & INTERAKTIF
+        - name: main_subsector
+          description: 'Subsektor Utama dari Intelectual Property (IP),  Nilai string yang valid persis seperti berikut (tanpa angka dan penjelasan): - "APLIKASI" - "ARSITEKTUR" - "DESAIN INTERIOR" - "DESAIN KOMUNIKASI VISUAL" - "DESAIN PRODUK" - "FASHION" - "FILM, ANIMASI & VIDEO" - "FOTOGRAFI" - "GAME" - "KRIYA" - "KULINER" - "MUSIK" - "PENERBITAN" - "PERIKLANAN" - "SENI PERTUNJUKAN" - "SENI RUPRA" - "TELEVISI & RADIO" - "LAYANAN & PLATFORM" - "SULIH SUARA" - "MODIFIKASI OTOMOTIF" - "TEKNOLOGI BARU (AI, IoT, BLOCKCHAIN, WEB3)" Contoh data: LAYANAN & PLATFORM'
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - APLIKASI
+          - DESAIN KOMUNIKASI VISUAL
+          - DESAIN PRODUK
+          - FASHION
+          - FILM, ANIMASI & VIDEO
+          - FOTOGRAFI
+          - GAME
+          - KRIYA
+          - KULINER
+          - LAYANAN & PLATFORM
+          - MUSIK
+          - PENERBITAN
+          - PERIKLANAN
+          - SENI PERTUNJUKAN
+          - SENI RUPA
+          - SULIH SUARA
+          - TEKNOLOGI BARU (AI, IoT, BLOCKCHAIN, WEB3)
+        - name: supporting_subsectors
+          description: 'Subsektor Pendukung dari Intelectual Property (IP), Disimpan dalam format JSON array of strings. Contoh data: ["LAYANAN & PLATFORM", "PENERBITAN"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - APLIKASI
+          - ARSITEKTUR
+          - DESAIN INTERIOR
+          - DESAIN KOMUNIKASI VISUAL
+          - DESAIN PRODUK
+          - FASHION
+          - FILM, ANIMASI & VIDEO
+          - FOTOGRAFI
+          - GAME
+          - KRIYA
+          - KULINER
+          - MUSIK
+          - PENERBITAN
+          - PERIKLANAN
+          - SENI PERTUNJUKAN
+          - SENI RUPRA
+          - TELEVISI & RADIO
+          - LAYANAN & PLATFORM
+          - SULIH SUARA
+          - MODIFIKASI OTOMOTIF
+          - TEKNOLOGI BARU (AI, IoT, BLOCKCHAIN, WEB3)
+        - name: development_stage
+          description: 'Status/Tahap Pengembangan Intelectual Property (IP) saat ini Disimpan dalam format JSON array of strings. Contoh data : ["IDE/KONSEP", "SUDAH BERJALAN"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - IDE/KONSEP
+          - PROTOTYPE/VERSI AWAL
+          - SUDAH BERJALAN
+          - SUDAH KOMERSIAL
+        - name: ip_description
+          description: Deskripsi singkat Intelectual Property (IP) yang diajukan
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: ip_uniqueness
+          description: Keunikan Intelectual Property (IP) yang diajukan
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: ip_values
+          description: 'Value yang ditawarkan dari Intelectual Property (IP) tersebut Disimpan dalam format JSON array of strings. Contoh data : ["BUDAYA & LOKALITAS", "HIBURAN"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - EDUKASI
+          - BUDAYA & LOKALITAS
+          - HIBURAN
+          - SOSIAL
+          - KOMERSIL
+        - name: is_copyright_registered
+          description: Status Hak Kekayaan Intelektual (HAKI) atau Hak Cipta, True jika sudah terdaftar
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: copyright_evidence_files
+          description: Dokumen atau link bukti pemegang Hak Kekayaan Intelektual (HAKI) atau Hak Cipta, wajib dijoin menjadi https://iccn-s3-bucket.s3.ap-southeast-1.amazonaws.com/{copyright_evidence_files}
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: news_links
+          description: Link Berita yang pernah meliput Intelectual Property (IP) ini
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: ip_locality_connection
+          description: Deskripsi nilai lokalitas dan dampak yang dapat diberikan jika IP ini dikembangkan lebih jauh.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: development_plan
+          description: Rencana pengembangan IP dalam 1 hingga 3 Tahun kedepan
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: expected_support
+          description: 'Bentuk Dukungan yang diharapkan dari ICCN untuk Intelectual Property (IP). Disimpan dalam format JSON array of strings. Contoh data yang tersimpan: ''["INKUBASI & MENTORING", "PROMOSI & EXPOSURE"]'''
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - INKUBASI & MENTORING
+          - SHOWCASE / FESTIVAL
+          - KOLABORASI DENGAN BRAND
+          - AKSES INVESTOR / MITRA
+          - PROMOSI & EXPOSURE
+          - PENGEMBANGAN PROGRAM KOTA KREATIF
+          - KOLABORASI LINTAS KOTA
+        - name: collaboration_status
+          description: |-
+            Keterbukaan untuk Kolaborasi.  Nilai string yang valid persis seperti berikut : - "YA" - "YA, DENGAN SYARAT TERTENTU" - "BELUM, UNTUK SAAT INI"
+            Contoh data: 'YA'
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - YA
+          - YA, DENGAN SYARAT TERTENTU
+        - name: portfolio_files
+          description: File Portofolio terkait Intelectual Property (IP), wajib dijoin menjadi https://iccn-s3-bucket.s3.ap-southeast-1.amazonaws.com/{portfolio_files}
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: website_social_links
+          description: Link Sosial Media terkait Intelectual Property (IP)
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: ip_potential_impact
+          description: 'Potensi Impact yang diberikan oleh Intelectual Property (IP) tersebut. Contoh data : ["DOKUMENTASI BUDAYA", "EDUKASI PUBLIK", "PELUANG EKONOMI KREATIF"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - PENGUATAN IDENTITAS KOTA
+          - PELUANG EKONOMI KREATIF
+          - KOLABORASI KOMUNITAS
+          - BRANDING KOTA
+          - KOLABORASI DENGAN BRAND
+          - PENGEMBANGAN LINTAS SUBSEKTOR
+          - PENGUATAN KOMUNITAS KREATIF
+          - EDUKASI PUBLIK
+          - DOKUMENTASI BUDAYA
+        - name: applicant_status
+          description: Status Pendaftar dalam IP
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Co-creator / tim kreatif
+          - Manajemen / agency
+          - Pemilik IP
+          - Perwakilan studio / perusahaan
+        - name: target_audience
+          description: 'Target Audiens Utama dari Intelectual Property (IP) tersebut Disimpan dalam format JSON array of strings. Contoh data : ["Anak-anak", "Publik Umum"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Anak-anak
+          - Remaja
+          - Komunitas Lokal
+          - Wisatawan
+          - Publik Umum
+        - name: portfolio_link
+          description: Link Portfolio terkait IP tersebut, wajib dijoin menjadi https://iccn-s3-bucket.s3.ap-southeast-1.amazonaws.com/{portfolio_link}
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: is_terms_agreed
+          description: Persetujuan S&K Komprehensif
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+      detail_program_ip_event:
+        name: detail_program_ip_event
+        schema_name: iccn_dwh
+        label: Detail Open Call IP Event
+        domain: Partisipasi Program
+        description: 'Tabel utama yang menyimpan data pengajuan Intelectual Property (IP) berupa events/festival melalui program Open Call IP Events. Cakupan informasi : - Identitas Festival: Nama festival (festival_name), tingkat/skala (festival_level), lokasi penyelenggaraan (province, city, main_venue), waktu & durasi (event_date, duration),  media sosial (social_media), serta riwayat penyelenggaraan (first_year, current_edition). - Data Penyelenggara & Kontak: Nama entitas penyelenggara (organizer_name), bentuk kelembagaan (institutional_form), tahun berdiri (established_year),  alamat sekretariat (secretariat_address), status badan hukum (has_legal_entity), dan informasi penanggung jawab/PIC (pic_name, email, pic_phone). - Konsep & Skala Kegiatan: Tujuan (festival_purpose), narasi latar belakang (background_narrative), nilai budaya (cultural_values), keunikan (uniqueness), tema tahunan (has_annual_theme), daftar kegiatan utama (main_activities), dan jumlah kegiatan (total_activities). - Keterlibatan Ekosistem: Keterlibatan seniman lokal/nasional (involves_local_community, involves_national_artist, involved_artists), pelibatan UMKM (involves_local_umkm, umkm_tenant_count, umkm_product_types), dan estimasi pengunjung (estimated_visitors) serta jumlah pelaku kreatif (total_creative_actors). - Dampak & Ekonomi: Total anggaran (total_budget), sumber dana (funding_sources), estimasi perputaran uang (estimated_economic_turnover, turnover_per_activity), metode transaksi (transaction_methods), serta berbagai dampak turunan (impact_economy, impact_ecosystem, impact_pad, impact_policy, impact_tourism, impact_reputation). - Infrastruktur & Kesiapan Teknis: Dukungan Pemda (has_local_gov_support), mitra utama (main_partners), akses transportasi (transportation_types, venue_distance), fasilitas akomodasi/umum (hotel_availability_count, public_facilities), serta kesiapan keamanan dan SDM (has_security_coordination, has_security_sop, core_committee_count, total_committee_count). - Lampiran Dokumen: SOP keamanan (security_sop_file), struktur organisasi (organization_structure_file), laporan lalu (previous_report_file), video dokumentasi (documentation_video_link), dan proposal mendatang (future_proposal_file). - Harapan Kolaborasi: Tantangan yang dihadapi (challenges), ekspektasi dukungan (expected_support), dan harapan bergabung dengan ICCN (iccn_network_expectations). NOTES : - JANGAN gunakan operator @> untuk JSONB array.  - Selalu cast menjadi text dan gunakan ILIKE untuk pencarian case-insensitive (misal: main_activities::text ILIKE ''%pertunjukan seni%'').'
+        primary_keys:
+        - detail_id
+        foreign_keys:
+        - constrained_columns:
+          - partisipasi_id
+          referred_table: fact_partisipasi_program
+          referred_schema: iccn_dwh
+          referred_columns:
+          - partisipasi_id
+          name: detail_program_ip_event_partisipasi_id_fkey
+        columns:
+        - name: detail_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: partisipasi_id
+          description: |-
+            ID partisipasi, foreign key ke fact_partisipasi_program.partisipasi_id. Satu baris = satu pendaftar program Open Call IP Event.
+            Gunakan JOIN ke fact_partisipasi_program ON partisipasi_id = fact_partisipasi_program.partisipasi_id untuk mengambil nama pendaftar, institusi, peran, provinsi, kota, email, phone, dan tanggal daftar.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys:
+          - referred_table: fact_partisipasi_program
+            referred_schema: iccn_dwh
+            referred_columns:
+            - partisipasi_id
+            name: detail_program_ip_event_partisipasi_id_fkey
+        - name: festival_name
+          description: Nama festival
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: first_year
+          description: Tahun pertama penyelenggaraan
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: current_edition
+          description: Edisi ke berapa tahun ini
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: festival_level
+          description: Tingkat festival
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: main_venue
+          description: Lokasi utama festival (nama venue/kawasan)
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: event_date
+          description: Waktu penyelenggaraan (Tanggal/bulan)
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: duration
+          description: Durasi penyelenggaraan
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: social_media
+          description: Media sosial festival
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: institutional_form
+          description: 'Bentuk kelembagaan penyelenggara Contoh data: Komunitas'
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Komunitas
+          - Yayasan
+          - Perkumpulan
+          - Badan Usaha
+        - name: established_year
+          description: Tahun berdiri penyelenggara
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: secretariat_address
+          description: Alamat sekretariat penyelenggara
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: has_legal_entity
+          description: Kepemilikan badan hukum penyelenggara, True jika memiliki badan hukum
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: has_local_gov_support
+          description: Dukungan pemerintah daerah terhadap festival, True jika festival sudah didukung pemerintah daerah
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: main_partners
+          description: Mitra utama festival
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: background_narrative
+          description: Latar belakang festival
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: cultural_values
+          description: Nilai budaya/identitas lokal yang diangkat pada festival
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: festival_purpose
+          description: Tujuan festival
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: uniqueness
+          description: Keunikan/uniqueness festival
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: has_annual_theme
+          description: Apakah festival memiliki tema tahunan, True jika iya
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: main_activities
+          description: 'Jenis kegiatan utama festival Disimpan dalam format JSON array of strings. Contoh data : ["Pertunjukan Seni", "Film"] NOTES : Jika query user TIDAK ADA di daftar nilai tersebut, WAJIB cast kolom ke text sebelum pakai ILIKE'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Pertunjukan Seni
+          - Pameran seni/kriya
+          - Kuliner
+          - Musik
+          - Film
+          - Workshop
+          - Diskusi/forum
+          - Aktivasi Ruang Publik
+        - name: total_activities
+          description: Jumlah total kegiatan
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: involves_local_community
+          description: Apakah melibatkan komunitas lokal, True jika iya
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: involves_national_artist
+          description: Apakah melibatkan seniman nasional/internasional, True jika iya
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: involved_artists
+          description: Nama seniman yang terlibat dalam festival
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: estimated_visitors
+          description: Estimasi jumlah pengunjung festival
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: total_creative_actors
+          description: Jumlah pelaku kreatif yang terlibat dalam festival
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: involves_local_umkm
+          description: Apakah melibatkan UMKM lokal, True jika iya
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: umkm_tenant_count
+          description: Jumlah tenant UMKM yang terlibat
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: umkm_product_types
+          description: 'Jenis produk UMKM yang terlibat Disimpan dalam format JSON array of strings. Beberapa pilihan nilai yang valid di dalam array : - "Kuliner" - "Kriya" - "Fesyen" - "Seni" Contoh data : ["Kuliner", "Fesyen"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: estimated_economic_turnover
+          description: Estimasi perputaran ekonomi selama festival (dalam rupiah)
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: transaction_methods
+          description: 'Metode transaksi selama festival berlangsung Disimpan dalam format JSON array of strings. Contoh data : ["Tunai", "Transfer", "EDC", "QRIS"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Tunai
+          - Transfer
+          - EDC
+          - QRIS
+        - name: impact_economy
+          description: Dampak festival terhadap ekonomi masyarakat
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: impact_ecosystem
+          description: Dampak festival terhadap perkembangan ekosistem ekonomi kreatif daerah
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: impact_pad
+          description: Dampak festival terhadap Pendapatan Asli Daerah (PAD)
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: impact_policy
+          description: Dampak festival terhadap kebijakan daerah terkait ekonomi kreatif/kebudayaan
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: impact_tourism
+          description: Dampak festival terhadap pariwisata
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: impact_reputation
+          description: Dampak festival terhadap reputasi daerah
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: transportation_types
+          description: 'Jenis transportasi yang digunakan menuju lokasi. Disimpan dalam format JSON array of strings. Contoh data : ["Motor", "Mobil"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Motor
+          - Mobil
+          - Minibus
+          - Bus
+          - Pesawat
+          - Kapal Laut
+          - Kereta Api
+        - name: venue_distance
+          description: Jarak venue festival dengan bandara/stasiun/terminal
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: hotel_availability_count
+          description: Jumlah ketersediaan hotel di sekitar lokasi festival (minimal bintang 3)
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: public_facilities
+          description: Fasilitas umum di sekitar lokasi festival
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: has_security_coordination
+          description: Apakah festival telah berkoordinasi dengan aparat keamanan?, True jika sudah
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: has_security_sop
+          description: Apakah terdapat SOP keamanan acara?, True jika iya
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: security_sop_file
+          description: File SOP Keamanan acara, wajib dijoin menjadi https://iccn-s3-bucket.s3.ap-southeast-1.amazonaws.com/{security_sop_file}
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: organization_structure_file
+          description: File Struktur Organisasi, wajib dijoin menjadi https://iccn-s3-bucket.s3.ap-southeast-1.amazonaws.com/{organization_structure_file}
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: core_committee_count
+          description: Jumlah panitia inti festival
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: total_committee_count
+          description: Jumlah total panitia festival
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: total_budget
+          description: Total anggaran/modal festival yang diisi sendiri oleh pendaftar di formulir (teks bebas, bukan angka). BUKAN dana hibah atau dana yang dicairkan ICCN — data pencairan dana ICCN tidak ada di database ini.
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: funding_sources
+          description: 'Sumber pendanaan festival menurut pendaftar (bukan dana dari ICCN). Disimpan dalam format JSON array of strings. Contoh data : ["Sponsorship", "Ticketing"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Sponsorship
+          - Ticketing
+          - CSR
+          - Donasi
+          - APBD
+        - name: turnover_per_activity
+          description: Omzet per kegiatan dalam festival
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: previous_report_file
+          description: File laporan kegiatan festival sebelumnya, wajib dijoin menjadi https://iccn-s3-bucket.s3.ap-southeast-1.amazonaws.com/{previous_report_file}
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: documentation_video_link
+          description: Link video dokumentasi festival sebelumnya
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: challenges
+          description: Tantangan penyelenggaraan festival
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: expected_support
+          description: Dukungan yang dibutuhkan selama menyelenggarakan festival
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: iccn_network_expectations
+          description: Harapan jika festival ini terhubung dengan jejaring ICCN
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: future_proposal_file
+          description: File proposal kegiatan festival yang akan diselenggarakan, wajib dijoin menjadi https://iccn-s3-bucket.s3.ap-southeast-1.amazonaws.com/{future_proposal_file}
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+      detail_program_kata_kreatif:
+        name: detail_program_kata_kreatif
+        schema_name: iccn_dwh
+        label: Detail Program Kata Kreatif
+        domain: Partisipasi Program
+        description: 'Tabel yang menyimpan data daftar daerah yang khusus mengikuti program KaTa Kreatif (Kampung Tangguh Kreatif) 2026 dari Kementrian Ekonomi Kreatif (sumber: pendataan_kata_kreatifs). Cakupan informasi: - Subsektor Ekonomi Kreatif: Subsektor utama (main_subsector) dan subsektor alternatif (alt_subsector_1, alt_subsector_2). - Kesiapan Ekosistem Daerah: Keberadaan wadah/forum lintas komunitas ekraf (has_ekraf_community), pengalaman uji petik PMK3I (has_pmk3i_pilot), dokumen blueprint city branding (has_city_branding_blueprint), dan Perda Ekraf (has_perda_ekraf). - Identitas Pendaftar: Nama pendaftar, institusi, peran, provinsi, kota, email, phone, dan tanggal daftar ada di fact_partisipasi_program (JOIN via partisipasi_id).'
+        primary_keys:
+        - detail_id
+        foreign_keys:
+        - constrained_columns:
+          - partisipasi_id
+          referred_table: fact_partisipasi_program
+          referred_schema: iccn_dwh
+          referred_columns:
+          - partisipasi_id
+          name: detail_program_kata_kreatif_partisipasi_id_fkey
+        columns:
+        - name: detail_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: partisipasi_id
+          description: |-
+            ID partisipasi, foreign key ke fact_partisipasi_program.partisipasi_id. Satu baris = satu pendaftar program Pendataan Kabupaten/Kota Kreatif (KaTa Kreatif).
+            Gunakan JOIN ke fact_partisipasi_program ON partisipasi_id = fact_partisipasi_program.partisipasi_id untuk mengambil nama pendaftar, institusi, peran, provinsi, kota, email, phone, dan tanggal daftar.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys:
+          - referred_table: fact_partisipasi_program
+            referred_schema: iccn_dwh
+            referred_columns:
+            - partisipasi_id
+            name: detail_program_kata_kreatif_partisipasi_id_fkey
+        - name: main_subsector
+          description: 'Subsektor Ekonomi Kreatif Utama. Nilai string yang valid persis seperti berikut (tanpa angka dan penjelasan) : - "Pengembangan Permainan" - "Arsitektur" - "Desain Interior" - "Musik" - "Seni Rupa" - "Desain Produk" - "Fesyen" - "Kuliner" - "Film, Animasi, dan Video" - "Fotografi" - "Desain Komunikasi Visual" - "Televisi dan Radio" - "Kriya" - "Periklanan" - "Seni Pertunjukan" - "Penerbitan" - "Aplikasi"'
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Desain Komunikasi Visual
+          - Kuliner
+          - Seni Pertunjukan
+        - name: alt_subsector_1
+          description: Subsektor Ekonomi Kreatif Alternatif 1
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Fesyen
+          - Kuliner
+          - Penerbitan
+          - Seni Rupa
+        - name: alt_subsector_2
+          description: Subsektor Ekonomi Kreatif Alternatif 2
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Fesyen
+          - Kriya
+          - Seni Pertunjukan
+          - Seni Rupa
+        - name: has_ekraf_community
+          description: Apakah kota/kabupaten sudah ada wadah/forum/jejaring lintas komunitas ekraf?, True jika sudah
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Sudah
+        - name: has_pmk3i_pilot
+          description: Apakah kota/kabupaten sudah pernah melakukan uji petik PMK3I?, True jika sudah
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Belum
+          - Sudah
+        - name: has_city_branding_blueprint
+          description: Apakah kota/kabupaten sudah memiliki dokumen blueprint strategis terkait city branding?, True jika sudah
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Belum
+          - Sudah
+        - name: has_perda_ekraf
+          description: Apakah kota/kabupaten sudah memiliki atau dalam proses penyusunan Perda Ekraf?, True jika sudah
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Belum
+          - Dalam Proses
+          - Sudah
+      detail_program_media_narrative:
+        name: detail_program_media_narrative
+        schema_name: iccn_dwh
+        label: Detail Open Call Narasi Media
+        domain: Partisipasi Program
+        description: 'Tabel yang berisi data media, jurnalis, kreator konten, serta pihak yang mewakili media atau jaringan komunikasi yang ingin berkontribusi dalam memperkuat visibilitas ekosistem kreatif Indonesia (sumber: open_call_media_narratives). Cakupan informasi: - Identitas Pendaftar: Nama media afiliasi (affiliated_media); nama lengkap, institusi, profesi/peran, domisili kota, dan kontak ada di fact_partisipasi_program (JOIN via partisipasi_id). - Detail Kontribusi: Jenis kontribusi yang diajukan (contribution_types - JSONB), judul/tema kontribusi (contribution_title), deskripsi singkat ide (contribution_description), tautan portofolio/karya (portfolio_links - JSONB), dan pengalaman peliputan (experience). - Bentuk Kolaborasi: Bentuk kolaborasi yang relevan dan diminati (collaboration_forms - JSONB). - Persetujuan: Status persetujuan terhadap syarat dan ketentuan (is_terms_agreed). NOTES : - JANGAN gunakan operator @> untuk JSONB array. Selalu cast menjadi text dan gunakan ILIKE untuk pencarian case-insensitive (misal: collaboration_forms::text ILIKE ''%liputan kegiatan iccn%'').'
+        primary_keys:
+        - detail_id
+        foreign_keys:
+        - constrained_columns:
+          - partisipasi_id
+          referred_table: fact_partisipasi_program
+          referred_schema: iccn_dwh
+          referred_columns:
+          - partisipasi_id
+          name: detail_program_media_narrative_partisipasi_id_fkey
+        columns:
+        - name: detail_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: partisipasi_id
+          description: |-
+            ID partisipasi, foreign key ke fact_partisipasi_program.partisipasi_id. Satu baris = satu pendaftar program Open Call Media Narrative.
+            Gunakan JOIN ke fact_partisipasi_program ON partisipasi_id = fact_partisipasi_program.partisipasi_id untuk mengambil nama pendaftar, institusi, peran, provinsi, kota, email, phone, dan tanggal daftar.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys:
+          - referred_table: fact_partisipasi_program
+            referred_schema: iccn_dwh
+            referred_columns:
+            - partisipasi_id
+            name: detail_program_media_narrative_partisipasi_id_fkey
+        - name: affiliated_media
+          description: Nama media komunikasi yang diwakili (khusus Agent Affiliated)
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: contribution_types
+          description: 'Jenis kontribusi yang diajukan Disimpan dalam format JSON array of strings. Contoh data : ["Liputan media", "Dokumentasi cerita kota kreatif"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Artikel kreatif / feature
+          - Liputan media
+          - Media awareness campaign
+          - Dokumentasi cerita kota kreatif
+          - Serial artikel / kolom opini
+          - Konten multimedia (video, podcast, dll.)
+          - Distribusi narasi melalui jaringan media
+        - name: contribution_title
+          description: Judul atau tema kontribusi yang diajukan
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: contribution_description
+          description: Deskripsi singkat ide atau kontribusi
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: portfolio_links
+          description: Tautan portofolio / artikel / karya relevan
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: experience
+          description: Pengalaman keterlibatan dalam peliputan/publikasi terkait ekonomi kreatif
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: collaboration_forms
+          description: 'Bentuk kolaborasi yang relevan. Disimpan dalam format JSON array of strings. Contoh data : ["Liputan kegiatan ICCN", "Penulisan artikel atau feature tentang kota kreatif"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Liputan kegiatan ICCN
+          - Penulisan artikel atau feature tentang kota kreatif
+          - Kolaborasi publikasi dengan media
+          - Pengembangan seri konten atau kampanye narasi
+          - Kurasi atau pengembangan konten pengetahuan
+          - Distribusi narasi melalui jaringan media
+        - name: is_terms_agreed
+          description: Persetujuan pernyataan
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+      detail_program_requestor:
+        name: detail_program_requestor
+        schema_name: iccn_dwh
+        label: Detail Permohonan Pendampingan
+        domain: Partisipasi Program
+        description: 'Tabel yang menyimpan daftar data kota/kabupaten yang ingin mendapatkan pendampingan dalam pengembangan ekosistem kreatif yang berkelanjutan (sumber: requestors). Cakupan informasi: - Identitas Pendaftar: ID akun (account_id) dan alamat (address); nama pendaftar, institusi, peran, provinsi, kota, email, phone, dan tanggal daftar ada di fact_partisipasi_program (JOIN via partisipasi_id). - Minat Pendampingan: Program pendampingan yang diminati (programs - JSONB), program Catha Ekadasa yang diminati (subsectors - JSONB), dan area/ekosistem kreatif yang ingin dikembangkan (focus_area). - Letter of Interest (LoI): File LoI (loi_url) dan nomor dokumen LoI (document_number). NOTES : - JANGAN gunakan operator @> untuk JSONB array. Selalu cast menjadi text dan gunakan ILIKE untuk pencarian case-insensitive (misal: programs::text ILIKE ''%unesco%'').'
+        primary_keys:
+        - detail_id
+        foreign_keys:
+        - constrained_columns:
+          - partisipasi_id
+          referred_table: fact_partisipasi_program
+          referred_schema: iccn_dwh
+          referred_columns:
+          - partisipasi_id
+          name: detail_program_requestor_partisipasi_id_fkey
+        columns:
+        - name: detail_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: partisipasi_id
+          description: |-
+            ID partisipasi, foreign key ke fact_partisipasi_program.partisipasi_id. Satu baris = satu pendaftar program Requestor (permohonan pendampingan/kolaborasi ke ICCN).
+            Gunakan JOIN ke fact_partisipasi_program ON partisipasi_id = fact_partisipasi_program.partisipasi_id untuk mengambil nama pendaftar, institusi, peran, provinsi, kota, email, phone, dan tanggal daftar.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys:
+          - referred_table: fact_partisipasi_program
+            referred_schema: iccn_dwh
+            referred_columns:
+            - partisipasi_id
+            name: detail_program_requestor_partisipasi_id_fkey
+        - name: account_id
+          description: ID akun (UUID) pendaftar di platform ICCN, hanya terisi jika pendaftar login saat mengajukan (sebagian besar NULL). Tidak dapat di-JOIN ke dim_user.user_id (tidak ada yang cocok).
+          type: UUID
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: address
+          description: Alamat pendaftar
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: programs
+          description: 'Program Pendampingan yang Diminati. Disimpan dalam format JSON array of strings. Beberapa pilihan yang valid di dalam array : - "Kota Kreatif Indonesia (Program Nasional Kemenekraf)" - "UNESCO Creative Cities Network (Jejaring Kota Kreatif Dunia)" Contoh data : ["Kota Kreatif Indonesia (Program Nasional Kemenekraf)", "UNESCO Creative Cities Network (Jejaring Kota Kreatif Dunia)", "Pusat Ekosistem Terintegrasi Ekonomi Kreatif"] NOTES : Jika query user TIDAK ADA di daftar nilai tersebut, WAJIB cast kolom ke text sebelum pakai ILIKE'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: focus_area
+          description: Uraian bebas tentang area/ekosistem kreatif yang paling dibutuhkan atau ingin dikembangkan di daerah pendaftar. Sebagian besar NULL.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: subsectors
+          description: 'Program Catha Ekadasa yang diminati. Disimpan dalam format JSON array of strings. Contoh data : ["Forum Lintas Komunitas", "Komite Ekonomi Kreatif"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Forum Lintas Komunitas
+          - Komite Ekonomi Kreatif
+          - Ekosistem Ekonomi Kreatif (Iterasatari)
+          - Navigasi Pembangunan
+          - Musrenbang Interaktif (Design Action)
+          - Indeks Kota/Kabupaten Kreatif
+          - Creative Center
+          - Strategi Komunikasi dan Narasi
+          - City Branding Management
+          - Festival Komunitas
+          - Agregator Ekonomi Kreatif
+        - name: loi_url
+          description: URL dari Letter of Interest (LoI), wajib dijoin menjadi https://iccn-s3-bucket.s3.ap-southeast-1.amazonaws.com/{loi_url}
+          type: VARCHAR(500)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: document_number
+          description: 'Nomor dokumen Letter of Interest (LoI) yang diterbitkan untuk pengajuan, format: ''<nomor>/LoI/Web/ICCN/<bulan romawi>/<tahun>'' (contoh: ''035/LoI/Web/ICCN/VI/2026''). Satu nomor bisa dipakai lebih dari satu pengajuan.'
+          type: VARCHAR(100)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+      detail_program_riset:
+        name: detail_program_riset
+        schema_name: iccn_dwh
+        label: Detail Open Call Riset
+        domain: Partisipasi Program
+        description: 'Tabel yang menyimpan data research pool yang berisi kumpulan peneliti/akademisi terkait ekosistem kota kreatif nasional yang terhubung dengan ICCN (sumber: open_call_researches). Cakupan informasi: - Identitas Peneliti: Bidang keahlian utama (field_of_expertise); nama peneliti, institusi, peran/profesi, email, phone, dan kota domisili ada di fact_partisipasi_program (JOIN via partisipasi_id). - Fokus & Topik Riset: Judul dan deskripsi topik riset (research_topic, research_topic_desc), domain fokus standar UNESCO (focus_domain), wilayah/kota tempat riset (regional_focus), cakupan skala penelitian (regional_focus_input), serta pengalaman riset sebelumnya (research_experience). - Dampak & Kontribusi: Relevansi strategis terhadap kota kreatif (strategic_relevance), potensi dampak pada kebijakan ekonomi kreatif (impact_potential, impact_potential_explanation), kontribusi spesifik pada ekosistem ekonomi kreatif (contribution), dan jenis output yang diharapkan (research_output). - Rencana Kolaborasi & Lampiran: Bentuk kolaborasi yang diharapkan (collaboration_form), berkas/tautan pendukung riset (supporting_documents), dan persetujuan syarat & ketentuan (is_terms_agreed). NOTES : - Gunakan tabel ini untuk mengidentifikasi potensi kolaborasi riset yang relevan dengan pengembangan ekosistem kota kreatif. - Gunakan tabel ini jika pertanyaan user berkaitan dengan peneliti, akademisi, data riset, atau kolaborasi ilmiah.'
+        primary_keys:
+        - detail_id
+        foreign_keys:
+        - constrained_columns:
+          - partisipasi_id
+          referred_table: fact_partisipasi_program
+          referred_schema: iccn_dwh
+          referred_columns:
+          - partisipasi_id
+          name: detail_program_riset_partisipasi_id_fkey
+        columns:
+        - name: detail_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: partisipasi_id
+          description: |-
+            ID partisipasi, foreign key ke fact_partisipasi_program.partisipasi_id. Satu baris = satu pendaftar program Open Call Riset.
+            Gunakan JOIN ke fact_partisipasi_program ON partisipasi_id = fact_partisipasi_program.partisipasi_id untuk mengambil nama pendaftar, institusi, peran, provinsi, kota, email, phone, dan tanggal daftar.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys:
+          - referred_table: fact_partisipasi_program
+            referred_schema: iccn_dwh
+            referred_columns:
+            - partisipasi_id
+            name: detail_program_riset_partisipasi_id_fkey
+        - name: field_of_expertise
+          description: Bidang Keahlian Utama
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: research_topic
+          description: Judul atau Topik Riset yang Diminati
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: research_topic_desc
+          description: Deskripsi singkat topik riset yang diminati
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: focus_domain
+          description: 'Domain Fokus Penelitian (Berdasarkan UNESCO Creative Cities Framework). Nilai string yang valid persis seperti berikut (tanpa angka dan penjelasan) : - "Culturel & Natural Heritage" - "Performance & Celebration" - "Visual Arts & Crafts" - "Books & Press" - "Audiovisual & Interactive Media" - "Design & Creative Services" - "Gastronomy" - "Music" - "Literature" - "Media Arts" - "Cultural Spaces" - "Cultural Participation" - "Cultural Governance" - "Creative Economy Ecosystem" Contoh data : Media Arts'
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Audiovisual & Interactive Media
+          - Books & Press
+          - Creative Economy Ecosystem
+          - Cultural Governance
+          - Cultural & Natural Heritage
+          - Cultural Participation
+          - Cultural Spaces
+          - Design & Creative Services
+          - Gastronomy
+          - Literature
+          - Media Arts
+          - Music
+          - Visual Arts & Crafts
+        - name: regional_focus
+          description: 'Cakupan fokus penelitian.  Nilai string yang valid persis (tanpa angka dan penjelasan):   - "satu kota/kabupaten"   - "beberapa kota"    - "studi komparatif antar kota"   - "skala nasional"   Contoh data : satu kota/kabupaten'
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - beberapa kota
+          - satu kota/kabupaten
+          - skala nasional
+          - studi komparatif antar kota
+        - name: strategic_relevance
+          description: Relevansi riset terhadap pengembangan ekosistem kota kreatif Indonesia
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: impact_potential
+          description: True jika berpotensi memiliki impact terhadap rekomendasi kebijakan, False jika tidak
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: impact_potential_explanation
+          description: Penjelasan kontribusi riset terhadap rekomendasi kebijakan ekonomi kreatif
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: contribution
+          description: 'Kontribusi penelitian terhadap Aspek Ekosistem Ekonomi Kreatif. Disimpan dalam format JSON array of strings. Contoh data : ["Penguatan PDB ekonomi kreatif", "Penguatan ekspor produk kreatif"]'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Penguatan PDB Ekonomi Kreatif
+          - Penguatan Ekspor Produk Kreatif
+          - Penyerapan Tenaga Kerja Kreatif
+          - Investasi dan Pembiayaan Sektor Kreatif
+        - name: collaboration_form
+          description: 'Bentuk Kolaborasi Riset. Disimpan dalam format JSONB array of strings. Contoh data : ["Joint research", "Co-authing jurnal atau publikasi ilmiah"] NOTES : - JANGAN gunakan operator @> karena bersifat case-sensitive. - Untuk pencarian case-insensitive, cast kolom menjadi text dan gunakan ILIKE. - Contoh : WHERE collaboration_form::text ILIKE ''%joint research%'''
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Joint research
+          - Co-authing jurnal atau publikasi ilmiah
+          - Penyusunan policy brief
+          - pengembangan dataset ekonomi kreatif
+          - Kontribusi pada Knowledge Library ICCN
+          - Pengembangan indikator/indeks kota kreatif
+          - Forum ilmiah atau diskusi riset ICCN
+        - name: research_output
+          description: Jenis output riset yang diharapkan
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: research_experience
+          description: Pengalaman riset atau publikasi yang relevan
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: supporting_documents
+          description: 'Dokumen atau link pendukung, wajib dijoin menjadi https://iccn-s3-bucket.s3.ap-southeast-1.amazonaws.com/{supporting_documents} Contoh data : {"files": ["open-call-research/supporting-documents/supporting-document_26032026100648_cv---f-mario-andaru.pdf"],"links": []}'
+          type: JSONB
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: is_terms_agreed
+          description: Persetujuan syarat & ketentuan program oleh pendaftar. True jika sudah menyetujui (saat ini seluruh data bernilai True).
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: regional_focus_input
+          description: Wilayah atau Kota yang menjadi tempat riset
+          type: VARCHAR(255)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: research_topic_vector
+          description: Pencarian semantik untuk topik riset. Gunakan saat user bertanya tentang judul penelitian, area kajian, atau fokus studi tertentu.
+          type: VECTOR(1024)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          vector_source: research_topic
+        - name: field_of_expertise_vector
+          description: Pencarian semantik untuk bidang keahlian. Gunakan saat user mencari peneliti/ahli berdasarkan kompetensi, spesialisasi, atau latar belakang akademik.
+          type: VECTOR(1024)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          vector_source: field_of_expertise
+        - name: focus_domain_vector
+          description: Pencarian semantik untuk domain fokus penelitian (Berdasarkan UNESCO Creative Cities Framework)). Gunakan saat butuh informasi domain penelitian UNESCO tertentu dari researcher
+          type: VECTOR(1024)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          vector_source: focus_domain
+        - name: strategic_relevance_vector
+          description: Pencarian semantik untuk relevansi strategis. Gunakan saat user menanyakan manfaat, urgensi, atau nilai strategis riset tertentu bagi kota kreatif.
+          type: VECTOR(1024)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          vector_source: strategic_relevance
+        - name: impact_potential_explanation_vector
+          description: Pencarian semantik untuk dampak dan kebijakan. Gunakan saat user bertanya tentang kontribusi riset terhadap rekomendasi atau kebijakan ekonomi kreatif tertentu
+          type: VECTOR(1024)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          vector_source: impact_potential_explanation
+      dim_kategori:
+        name: dim_kategori
+        schema_name: iccn_dwh
+        label: Kategori Konten
+        domain: Berita & Event
+        description: |-
+          Daftar kategori untuk berita dan event di ICCN. Saat ini berisi 4 kategori : Artikel, Berita, Event, Talkshow.
+          Gunakan tabel ini jika ingin mengetahui atau memfilter kategori dari berita/news tertentu (JOIN dari fact_berita.kategori_id).
+        primary_keys:
+        - kategori_id
+        foreign_keys: []
+        columns:
+        - name: kategori_id
+          description: Primary Key, gunakan untuk JOIN dari tabel fact_berita (kategori_id)
+          type: UUID
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: nama_kategori
+          description: |-
+            Nama kategori. Nilai yang tersedia saat ini: Artikel, Berita, Event, Talkshow.
+            Gunakan WHERE nama_kategori = 'Berita' untuk filter berita saja, atau nama_kategori = 'Event' untuk event.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Artikel
+          - Berita
+          - Event
+          - Featured
+          - Talkshow
+        - name: is_event
+          description: Penanda apakah kategori ini merupakan kategori event/acara. True jika kategori termasuk event, False jika kategori berupa konten tulisan (berita/artikel).
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+      dim_program:
+        name: dim_program
+        schema_name: iccn_dwh
+        label: Program
+        domain: Partisipasi Program
+        description: Tabel dimensi referensi program-program ICCN (RISET, IP, FESTIVAL, IP_EVENT, CORPORATE_PARTNER, MEDIA_NARRATIVE, KATA_KREATIF, REQUESTOR). JOIN ke fact_partisipasi_program ON dim_program.program_id = fact_partisipasi_program.program_id untuk mendapatkan nama program.
+        primary_keys:
+        - program_id
+        foreign_keys: []
+        columns:
+        - name: program_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: jenis_program
+          description: 'Kode jenis program, dipakai juga di fact_partisipasi_program.jenis_program. Nilai: RISET, IP, FESTIVAL, IP_EVENT, CORPORATE_PARTNER, MEDIA_NARRATIVE, KATA_KREATIF, REQUESTOR. Setiap kode punya tabel detail sendiri: detail_program_<kode huruf kecil> (contoh: FESTIVAL -> detail_program_festival).'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+          enum_values:
+          - CORPORATE_PARTNER
+          - FESTIVAL
+          - IP
+          - IP_EVENT
+          - KATA_KREATIF
+          - MEDIA_NARRATIVE
+          - REQUESTOR
+          - RISET
+        - name: nama_program
+          description: 'Nama lengkap program (contoh: ''Open Call Riset'', ''Open Call Intellectual Property'', ''Pendataan Kabupaten/Kota Kreatif''). Gunakan untuk menampilkan nama program ke user.'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+          enum_values:
+          - Open Call Corporate Partner
+          - Open Call Festival
+          - Open Call Intellectual Property
+          - Open Call IP Event
+          - Open Call Media Narrative
+          - Open Call Riset
+          - Pendataan Kabupaten/Kota Kreatif
+          - Requestor Program
+        - name: deskripsi
+          description: Penjelasan singkat tujuan program dan siapa pendaftarnya.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+        - name: sumber_tabel
+          description: 'Nama tabel sumber asli di sistem operasional sebelum masuk DWH (contoh: open_call_researches, open_call_ips). Hanya untuk keperluan lineage, tidak perlu dipakai dalam query.'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+      dim_user:
+        name: dim_user
+        schema_name: iccn_dwh
+        label: Member ICCN
+        domain: Member ICCN
+        description: |-
+          Daftar member atau pengguna yang terdaftar di super-apps ICCN. NOTES : Semua dianggap member/pelaku ekraf ICCN, walaupun ada yang datanya masih kosong).
+          Berisi data profil lengkap termasuk nama, kontak (nomor telepon & email), tanggal lahir, lokasi domisili (kota/provinsi), subsektor ekraf, dan biodata.
+        primary_keys:
+        - user_id
+        foreign_keys: []
+        columns:
+        - name: user_id
+          description: Primary Key
+          type: TEXT
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: fullname
+          description: Nama lengkap member/pengguna ICCN
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: no_hp
+          description: Nomor HP/WhatsApp member
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: email
+          description: Email member
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: tanggal_lahir
+          description: Tanggal lahir member
+          type: DATE
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: domisili_kota
+          description: Asal Kota atau Kabupaten tempat member berdomisili
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: domisili_provinsi
+          description: 'Asal Provinsi tempat member berdomisili. Provinsi yang sama ditulis dalam beberapa varian; selalu filter dengan IN (...) untuk semua variannya: Jakarta = ''DKI JAKARTA'', ''DAERAH KHUSUS JAKARTA''; Yogyakarta = ''DI YOGYAKARTA'', ''DIY'', ''DAERAH ISTIMEWA YOGYAKARTA''. Untuk total per provinsi, gabungkan varian dengan CASE ke nama di dim_wilayah (DKI JAKARTA / DI YOGYAKARTA).'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - ACEH
+          - BALI
+          - BANTEN
+          - BENGKULU
+          - DAERAH ISTIMEWA YOGYAKARTA
+          - DAERAH KHUSUS JAKARTA
+          - DIY
+          - DI YOGYAKARTA
+          - DKI JAKARTA
+          - GORONTALO
+          - JAMBI
+          - JAWA BARAT
+          - JAWA TENGAH
+          - JAWA TIMUR
+          - KALIMANTAN BARAT
+          - KALIMANTAN SELATAN
+          - KALIMANTAN TENGAH
+          - KALIMANTAN TIMUR
+          - KEPULAUAN BANGKA BELITUNG
+          - KEPULAUAN RIAU
+          - LAMPUNG
+          - MALUKU
+          - MALUKU UTARA
+          - NUSA TENGGARA BARAT
+          - NUSA TENGGARA TIMUR
+          - PAPUA
+          - PAPUA BARAT
+          - RIAU
+          - SULAWESI SELATAN
+          - SULAWESI TENGAH
+          - SULAWESI TENGGARA
+          - SULAWESI UTARA
+          - SUMATERA BARAT
+          - SUMATERA SELATAN
+          - SUMATERA UTARA
+        - name: subsektor_ekraf
+          description: 'Bidang Ekonomi Kreatif (Ekraf) yang digeluti member, contoh nilai: Film, Musik, Kuliner, Kriya, Desain, dll.'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Aplikasi
+          - Arsitektur
+          - Desain Interior
+          - Desain Komunikasi Visual (DKV)
+          - Desain Produk
+          - Fashion
+          - Film, Animasi, dan Video
+          - Fotografi
+          - GIM
+          - Kriya (kerajinan)
+          - Kuliner
+          - Musik
+          - Penerbitan
+          - Periklanan
+          - Permainan Interaktif (Game Developer)
+          - Seni Pertunjukan
+          - Seni Rupa
+          - Televisi dan Radio
+        - name: bio
+          description: Biodata singkat yang ditulis oleh member/pengguna di profilnya
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: created_at
+          description: |-
+            Waktu member/pengguna mendaftar (membuat akun) di super-apps ICCN.
+            Gunakan kolom ini untuk statistik jumlah pendaftar member per periode waktu.
+          type: TIMESTAMP
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+      dim_waktu:
+        name: dim_waktu
+        schema_name: iccn_dwh
+        label: Waktu
+        domain: Dimensi Waktu & Wilayah
+        description: |-
+          Tabel dimensi waktu (date dimension), berisi satu baris per tanggal kalender dari 2020-01-01 s.d. 2030-12-31. Primary key tanggal_id adalah tanggal dalam format integer YYYYMMDD (contoh: 2026-03-17 -> 20260317), sehingga JOIN cukup dengan mencocokkan kolom tanggal_id di tabel fact tanpa perlu CAST.
+          Gunakan tabel ini untuk agregasi berdasarkan hari/bulan/kuartal/tahun (GROUP BY nama_bulan, kuartal, atau tahun) dari :
+          - fact_berita (JOIN ON fact_berita.tanggal_id = dim_waktu.tanggal_id)
+          - fact_event (JOIN ON fact_event.tanggal_id_mulai = dim_waktu.tanggal_id)
+          - fact_partisipasi_program (JOIN ON fact_partisipasi_program.tanggal_id = dim_waktu.tanggal_id)
+        primary_keys:
+        - tanggal_id
+        foreign_keys: []
+        columns:
+        - name: tanggal_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: tanggal
+          description: 'Tanggal kalender (DATE), rentang 2020-01-01 s.d. 2030-12-31. Primary key tanggal_id adalah tanggal ini dalam format integer YYYYMMDD (contoh: 2026-03-17 -> 20260317).'
+          type: DATE
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+        - name: hari
+          description: Tanggal dalam bulan (1-31), bukan nama hari.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: bulan
+          description: Nomor bulan (1-12).
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: nama_bulan
+          description: Nama bulan dalam bahasa Inggris (January, February, ..., December). Terjemahkan ke bahasa Indonesia saat menampilkan jawaban.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - April
+          - August
+          - December
+          - February
+          - January
+          - July
+          - June
+          - March
+          - May
+          - November
+          - October
+          - September
+        - name: kuartal
+          description: 'Kuartal dalam tahun, nilai: ''Q1'', ''Q2'', ''Q3'', ''Q4''.'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Q1
+          - Q2
+          - Q3
+          - Q4
+        - name: tahun
+          description: Tahun (2020-2030).
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+      dim_wilayah:
+        name: dim_wilayah
+        schema_name: iccn_dwh
+        label: Wilayah
+        domain: Dimensi Waktu & Wilayah
+        description: 'Tabel dimensi wilayah, berisi daftar kabupaten/kota beserta provinsinya. Relasi yang valid hanya: (1) FK dari fact_sebaran_jejaring (JOIN ON fact_sebaran_jejaring.wilayah_id = dim_wilayah.wilayah_id), lalu GROUP BY provinsi atau kabupaten_kota untuk agregasi sebaran jejaring per wilayah; (2) pencocokan nilai kabupaten_kota dengan fact_insight_ikm / fact_insight_umkm. Tabel lain yang punya kolom wilayah sendiri (mis. fact_pelaku_ekraf) TIDAK terhubung ke tabel ini.'
+        primary_keys:
+        - wilayah_id
+        foreign_keys: []
+        columns:
+        - name: wilayah_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: provinsi
+          description: Nama provinsi
+          type: TEXT
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+          enum_values:
+          - ACEH
+          - BALI
+          - BANTEN
+          - BENGKULU
+          - DI YOGYAKARTA
+          - DKI JAKARTA
+          - GORONTALO
+          - JAMBI
+          - JAWA BARAT
+          - JAWA TENGAH
+          - JAWA TIMUR
+          - KALIMANTAN BARAT
+          - KALIMANTAN SELATAN
+          - KALIMANTAN TENGAH
+          - KALIMANTAN TIMUR
+          - KALIMANTAN UTARA
+          - KEPULAUAN BANGKA BELITUNG
+          - KEPULAUAN RIAU
+          - LAMPUNG
+          - MALUKU
+          - MALUKU UTARA
+          - NUSA TENGGARA BARAT
+          - NUSA TENGGARA TIMUR
+          - PAPUA
+          - PAPUA BARAT
+          - PAPUA BARAT DAYA
+          - PAPUA TENGAH
+          - RIAU
+          - SULAWESI BARAT
+          - SULAWESI SELATAN
+          - SULAWESI TENGAH
+          - SULAWESI TENGGARA
+          - SULAWESI UTARA
+          - SUMATERA BARAT
+          - SUMATERA SELATAN
+          - SUMATERA UTARA
+        - name: kabupaten_kota
+          description: Nama kabupaten
+          type: TEXT
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+        - name: created_at
+          description: Waktu baris dimuat ke DWH oleh proses ETL. Bukan data bisnis, tidak perlu dipakai untuk analisis.
+          type: TIMESTAMP
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+      fact_berita:
+        name: fact_berita
+        schema_name: iccn_dwh
+        label: Berita
+        domain: Berita & Event
+        description: Tabel ini menyimpan berita dan artikel platform ICCN. Satu baris mewakili satu berita yang memuat judul, isi lengkap di kolom content, status, kota, jumlah views, status publik, dan tanggal terbit. kategori_id terhubung ke dim_kategori melalui foreign key, sementara tanggal_id dapat digunakan untuk bergabung dengan dim_waktu. title_vector dan content_vector menyimpan embedding untuk pencarian berdasarkan kemiripan makna. Sebagian berita belum memiliki content_vector dari sumbernya
+        primary_keys:
+        - berita_id
+        foreign_keys:
+        - constrained_columns:
+          - kategori_id
+          referred_table: dim_kategori
+          referred_schema: iccn_dwh
+          referred_columns:
+          - kategori_id
+          name: fact_berita_kategori_id_fkey
+        columns:
+        - name: berita_id
+          description: Primary Key
+          type: UUID
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: kategori_id
+          description: |-
+            ID kategori berita, merujuk ke tabel dim_kategori untuk mengetahui jenis kategorinya (Artikel, Berita, Event, atau Talkshow).
+            Gunakan JOIN ke dim_kategori ON kategori_id = dim_kategori.kategori_id
+          type: UUID
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys:
+          - referred_table: dim_kategori
+            referred_schema: iccn_dwh
+            referred_columns:
+            - kategori_id
+            name: fact_berita_kategori_id_fkey
+        - name: judul
+          description: |-
+            Judul berita/artikel yang dipublikasikan.
+            Gunakan ILIKE hanya jika user menyebut keyword spesifik yang jelas.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: content
+          description: |-
+            Isian atau content dari berita/news tertentu.
+            NOTE : Pastikan select kolom ini jika user bertanya terkait isian dari berita tertentu!
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: status
+          description: |-
+            Status publikasi berita. Nilai yang mungkin: "published", "external", "scheduled", "revised".
+            Untuk menampilkan berita yang sudah live, filter WHERE status IN ('published', 'external').
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - external
+          - published
+        - name: kota
+          description: Lokasi kabupaten/kota dimana berita tersebut terjadi atau relevan
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: views
+          description: |-
+            Jumlah total views/tayangan dari berita.
+            Gunakan kolom ini untuk statistik popularitas, ranking, atau sorting berita berdasarkan jumlah pembaca.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: is_public
+          description: Visibilitas berita. True jika berita dapat dilihat oleh umum/publik, False jika berita hanya dapat dilihat oleh member terdaftar.
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: tanggal_publish_wib
+          description: |-
+            Tanggal dan waktu berita dipublikasikan.
+            Gunakan kolom ini untuk ORDER BY (terbaru) atau filter rentang waktu.
+          type: TIMESTAMP
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: tanggal_id
+          description: Tanggal publikasi berita dalam format integer YYYYMMDD. Gunakan JOIN ke dim_waktu ON tanggal_id = dim_waktu.tanggal_id untuk agregasi per bulan/kuartal/tahun.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: title_vector
+          description: Pencarian semantik untuk judul berita. Gunakan saat user mencari berita berdasarkan kemiripan makna judul, bukan kecocokan kata persis.
+          type: VECTOR(1024)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          vector_source: judul
+        - name: content_vector
+          description: Pencarian semantik untuk isi berita. Gunakan saat user mencari berita berdasarkan kemiripan makna/topik isi, bukan kecocokan kata persis.
+          type: VECTOR(1024)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          vector_source: content
+      fact_event:
+        name: fact_event
+        schema_name: iccn_dwh
+        label: Event
+        domain: Berita & Event
+        description: Tabel ini menyimpan event yang tercantum di platform ICCN. Satu baris mewakili satu event yang memuat nama, deskripsi, lokasi, waktu mulai dan selesai, serta status aktif. tanggal_id_mulai dapat digunakan untuk bergabung dengan dim_waktu. Lokasi masih berupa teks bebas yang dapat berisi nama tempat, beberapa kota, atau keterangan online. Pencarian kata kunci dapat memakai ILIKE, tetapi lokasi tidak terhubung ke dim_wilayah. description_vector menyimpan embedding untuk mencari event berdasarkan kemiripan deskripsi.
+        primary_keys:
+        - event_id
+        foreign_keys: []
+        columns:
+        - name: event_id
+          description: Primary Key
+          type: UUID
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: nama_event
+          description: Nama Event/Acara yang diselenggarakan
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: description
+          description: Deskripsi kegiatan yang dilakukan pada Event/Acara tersebut
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: lokasi
+          description: Lokasi dilaksanakannya Event/Acara tersebut (nama tempat atau alamat)
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: is_active
+          description: Status Event/Acara. True artinya event masih aktif, False artinya event sudah tidak aktif atau selesai.
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: mulai_wib
+          description: Waktu dimulainya Event/Acara.
+          type: TIMESTAMP
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: selesai_wib
+          description: Waktu selesainya Event/Acara.
+          type: TIMESTAMP
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: tanggal_id_mulai
+          description: Tanggal mulai event dalam format integer YYYYMMDD. Gunakan JOIN ke dim_waktu ON tanggal_id_mulai = dim_waktu.tanggal_id untuk agregasi per bulan/kuartal/tahun.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: description_vector
+          description: Pencarian semantik untuk deskripsi event. Gunakan saat user mencari event berdasarkan kemiripan makna deskripsi, misalnya tema atau jenis kegiatan tertentu.
+          type: VECTOR(1024)
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          vector_source: description
+      fact_insight_ikm:
+        name: fact_insight_ikm
+        schema_name: iccn_dwh
+        label: Insight IKM
+        domain: Insight IKM & UMKM
+        description: Tabel ini berisi ringkasan industri kecil menengah per kelurahan. Satu baris mewakili satu kelurahan, dengan jumlah IKM, jumlah yang berizin, tenaga kerja, nilai produksi, investasi, komoditi dominan, dan kategori industri dominan. Kolom jumlah sudah berupa agregat, sehingga total lintas kelurahan dihitung dengan SUM. kabupaten_kota dapat dicocokkan dengan dim_wilayah.kabupaten_kota. Data IKM dapat dibandingkan dengan fact_insight_umkm berdasarkan kecamatan dan kelurahan. Gunakan LEFT JOIN jika ingin semua kelurahan IKM tetap tampil meskipun tidak ada pasangan di tabel UMKM. Periksa cakupan pada kolom kabupaten_kota sebelum menganggap hasilnya mewakili wilayah lain.
+        primary_keys:
+        - insight_id
+        foreign_keys: []
+        columns:
+        - name: insight_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: kabupaten_kota
+          description: nama kabupaten/kota lokasi IKM
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - KOTA MALANG
+        - name: kecamatan
+          description: nama kecamatan lokasi IKM
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - BLIMBING
+          - KEDUNGKANDANG
+          - KLOJEN
+          - LOWOKWARU
+          - SUKUN
+        - name: kelurahan
+          description: nama kelurahan/desa lokasi IKM
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: jumlah_ikm
+          description: jumlah industri kecil menengah
+          type: BIGINT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: ikm_berizin
+          description: jumlah industri kecil menengah yang sudah memiliki izin
+          type: BIGINT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: total_tenaga_kerja
+          description: jumlah tenaga kerja dari industri kecil menengah tersebut
+          type: BIGINT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: total_nilai_produksi
+          description: total nilai produksi (Rupiah) yang dihasilkan industri kecil menengah di wilayah tersebut
+          type: BIGINT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: total_investasi
+          description: total nilai investasi (Rupiah) yang ditanamkan pada industri kecil menengah di wilayah tersebut
+          type: BIGINT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: komoditi_dominan
+          description: komoditas yang paling banyak diproduksi oleh industri kecil menengah di wilayah tersebut
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - INDSUTRI KUE BASAH
+          - INDUSTRI AIR MINUM DAN AIR MINERAL
+          - INDUSTRI ALAS KAKI UNTUK KEPERLUAN SEHARI-HARI
+          - INDUSTRI BARANG JADI TEKSTIL LAINNYA
+          - INDUSTRI BATU BATA DARI TANAH LIAT, KERAMIK
+          - INDUSTRI FURNITUR DARI KAYU
+          - INDUSTRI KAIN RAJUTAN
+          - INDUSTRI KERTAS TISSUE
+          - INDUSTRI KERUPUK, KERIPIK, PEYEK DAN SEJENISNYA
+          - INDUSTRI KUE BASAH
+          - INDUSTRI PAKAIAN JADI (KONVEKSI) DARI TEKSTIL
+          - INDUSTRI PEMBUATAN PAKAIAN SESUAI PESANAN
+          - INDUSTRI PENCETAKAN UMUM
+          - INDUSTRI PERLENGKAPAN RUMAH TANGGA DARI PORSELEN
+          - INDUSTRI PERLENGKAPAN RUMAH TANGGA DARI TANAH LIAT, KERAMIK
+          - INDUSTRI PRODUK MAKANAN LAINNYA
+          - INDUSTRI PRODUK OBAT TRADISIONAL
+          - INDUSTRI PRODUK ROTI DAN KUE
+          - INDUSTRI TAHU KEDELAI
+          - INDUSTRI TEMPE KEDELAI
+          - PENJAHITAN DAN PEMBUATAN PAKAIAN JADI SESUAI PESANAN
+          - PENJAHITAN DAN PEMBUATAN PAKAIAN SESUAI PESANAN
+        - name: kategori_industri_dominan
+          description: 'kategori industri yang paling dominan di wilayah tersebut (misal: pangan, sandang, kerajinan, logam, dll.)'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - GALIAN NON LOGAM
+          - MAKANAN DAN MINUMAN
+          - PERALATAN
+          - PERCETAKAN
+          - TEKSTIL
+      fact_insight_umkm:
+        name: fact_insight_umkm
+        schema_name: iccn_dwh
+        label: Insight UMKM
+        domain: Insight IKM & UMKM
+        description: Tabel ini berisi ringkasan UMKM per kelurahan. Satu baris mewakili satu kelurahan, dengan jumlah UMKM, termasuk jumlah yang aktif, berlegalitas, terlatih, memiliki akses modal, dan sudah digital, serta bidang usaha dominan dan kebutuhan utamanya. Kolom jumlah sudah berupa agregat, sehingga total lintas kelurahan dihitung dengan SUM, bukan COUNT. kabupaten_kota dapat dicocokkan dengan dim_wilayah.kabupaten_kota. Data UMKM dapat dibandingkan dengan fact_insight_ikm berdasarkan kecamatan dan kelurahan, tetapi tidak semua kelurahan tersedia di kedua tabel. Periksa cakupan pada kolom kabupaten_kota sebelum menganggap hasilnya mewakili wilayah lain.
+        primary_keys:
+        - insight_id
+        foreign_keys: []
+        columns:
+        - name: insight_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: kabupaten_kota
+          description: nama kabupaten/kota lokasi UMKM
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - KOTA MALANG
+        - name: kecamatan
+          description: nama kecamatan lokasi UMKM
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - BLIMBING
+          - KEDUNGKANDANG
+          - KLOJEN
+          - LOWOKWARU
+          - SUKUN
+        - name: kelurahan
+          description: nama kelurahan/desa lokasi UMKM
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: jumlah_umkm
+          description: jumlah usaha mikro kecil menengah
+          type: BIGINT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: jumlah_umkm_aktif
+          description: jumlah UMKM yang masih aktif beroperasi
+          type: BIGINT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: jumlah_umkm_berlegalitas
+          description: jumlah UMKM yang sudah memiliki legalitas usaha (izin/NIB)
+          type: BIGINT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: jumlah_umkm_terlatih
+          description: jumlah UMKM yang sudah mengikuti pelatihan/pembinaan
+          type: BIGINT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: jumlah_umkm_akses_modal
+          description: jumlah UMKM yang sudah mendapatkan akses permodalan
+          type: BIGINT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: jumlah_umkm_digital
+          description: jumlah UMKM yang sudah go digital (memasarkan produk secara online)
+          type: BIGINT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: bidang_usaha_dominan
+          description: bidang usaha yang paling banyak digeluti UMKM di wilayah tersebut
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - KULINER
+        - name: kebutuhan_utama
+          description: 'kebutuhan utama yang paling banyak dibutuhkan UMKM di wilayah tersebut (misal: modal, pelatihan, pemasaran, dll.)'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - BANTUAN MODAL
+      fact_partisipasi_program:
+        name: fact_partisipasi_program
+        schema_name: iccn_dwh
+        label: Partisipasi Program
+        domain: Partisipasi Program
+        description: Tabel ini menyimpan pendaftaran dari delapan sumber program ICCN, yaitu riset (daftar researcher), IP, festival, IP event, corporate partner, media narrative, pendataan kabupaten/kota kreatif, dan requestor. Satu baris mewakili satu submission, bukan angka rekap. Jumlah pendaftar dihitung dengan COUNT(*) dan dapat dikelompokkan berdasarkan jenis_program. Atribut umumnya mencakup nama pendaftar, institusi, peran, provinsi, kota, topik, subsektor, dan tanggal daftar. program_id terhubung ke dim_program melalui foreign key, sementara tanggal_id terhubung ke dim_waktu. Isian khusus tiap formulir berada di tabel detail_program_* dan dihubungkan lewat partisipasi_id.
+        primary_keys:
+        - partisipasi_id
+        foreign_keys:
+        - constrained_columns:
+          - program_id
+          referred_table: dim_program
+          referred_schema: iccn_dwh
+          referred_columns:
+          - program_id
+          name: fact_partisipasi_program_program_id_fkey
+        - constrained_columns:
+          - tanggal_id
+          referred_table: dim_waktu
+          referred_schema: iccn_dwh
+          referred_columns:
+          - tanggal_id
+          name: fact_partisipasi_program_tanggal_id_fkey
+        columns:
+        - name: partisipasi_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: sumber_id
+          description: ID baris asli dari tabel sumber pendaftaran (ditentukan oleh jenis_program), misal open_call_researches.id, open_call_ips.id, dst.
+          type: UUID
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+        - name: program_id
+          description: ID program, foreign key ke dim_program.program_id. Gunakan JOIN ke dim_program ON program_id = dim_program.program_id untuk mendapatkan nama_program. Detail isian tiap pendaftar ada di tabel detail_program_* (JOIN via partisipasi_id).
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys:
+          - referred_table: dim_program
+            referred_schema: iccn_dwh
+            referred_columns:
+            - program_id
+            name: fact_partisipasi_program_program_id_fkey
+        - name: jenis_program
+          description: 'Kode jenis program (huruf besar). Nilai persis: RISET, IP, FESTIVAL, IP_EVENT, CORPORATE_PARTNER, MEDIA_NARRATIVE, KATA_KREATIF, REQUESTOR. Filter dengan kode ini (contoh: jenis_program = ''RISET''), bukan nama program seperti ''Open Call Riset''; nama lengkap ada di dim_program.nama_program.'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+          enum_values:
+          - FESTIVAL
+          - IP
+          - IP_EVENT
+          - KATA_KREATIF
+          - REQUESTOR
+          - RISET
+        - name: nama_pendaftar
+          description: Nama pendaftar/peserta program, digabungkan dari kolom nama pada berbagai tabel sumber (researcher_name, fullname, organization_name, registrant_name, festival_name). Satu baris = satu pendaftaran, bukan satu orang; pendaftaran tim memuat beberapa nama anggota dalam satu teks (misal 'A, B dan C'), jadi atribut lain di baris yang sama milik pendaftaran itu, bukan milik nama tertentu di dalamnya.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: institusi
+          description: Institusi/organisasi pendaftar, digabungkan dari kolom institution/organization_name pada berbagai tabel sumber.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: peran
+          description: Peran pendaftar dalam program, digabungkan dari kolom role/position pada berbagai tabel sumber.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Aggregator
+          - Agregator
+          - Akademisi
+          - Anggota tim riset
+          - Co-creator / tim kreatif
+          - Internasional
+          - Kab/Kota
+          - Ketua tim riset
+          - Komunitas
+          - Manajemen / agency
+          - Media
+          - Nasional
+          - Pelaku Usaha (Bisnis)
+          - Pemerintah
+          - Pemilik IP
+          - Peneliti individu
+          - Perwakilan institusi riset
+          - Perwakilan studio / perusahaan
+          - Provinsi
+          - Sebagai putera lingkungan Sumatera Utara
+          - Yayasan
+        - name: email
+          description: Alamat email kontak pendaftaran (pendaftar/penanggung jawab). Satu email per pendaftaran; bila nama_pendaftar berisi beberapa anggota tim, email ini tidak bisa diatribusikan ke anggota tertentu.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: phone
+          description: Nomor telepon/WhatsApp kontak pendaftaran, umumnya berformat 62xxxxxxxxxx (tanpa '+'). Satu nomor per pendaftaran; bila nama_pendaftar berisi beberapa anggota tim, nomor ini tidak bisa diatribusikan ke anggota tertentu.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: provinsi
+          description: 'Provinsi domisili pendaftar/penyelenggara, digabungkan dari kolom province pada berbagai tabel sumber. Provinsi yang sama ditulis dalam beberapa varian; selalu filter dengan IN (...) untuk semua variannya: Jakarta = ''DKI JAKARTA'', ''DAERAH KHUSUS JAKARTA''; Yogyakarta = ''DI YOGYAKARTA'', ''DAERAH ISTIMEWA YOGYAKARTA''; Aceh = ''ACEH'', ''01. ACEH''. Untuk total per provinsi, gabungkan varian dengan CASE ke nama di dim_wilayah (DKI JAKARTA / DI YOGYAKARTA / ACEH). Nilai ''BEBERAPA KOTA'', ''SATU KOTA/KABUPATEN'', ''SKALA NASIONAL'', dan ''STUDI KOMPARATIF ANTAR KOTA'' bukan provinsi.'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - 01. ACEH
+          - ACEH
+          - BALI
+          - BANTEN
+          - BEBERAPA KOTA
+          - BENGKULU
+          - DAERAH ISTIMEWA YOGYAKARTA
+          - DAERAH KHUSUS JAKARTA
+          - DI YOGYAKARTA
+          - DKI JAKARTA
+          - GORONTALO
+          - JAMBI
+          - JAWA BARAT
+          - JAWA TENGAH
+          - JAWA TIMUR
+          - KALIMANTAN BARAT
+          - KALIMANTAN SELATAN
+          - KALIMANTAN TENGAH
+          - KALIMANTAN TIMUR
+          - KEPULAUAN RIAU
+          - LAMPUNG
+          - MALUKU
+          - NUSA TENGGARA BARAT
+          - NUSA TENGGARA TIMUR
+          - RIAU
+          - SATU KOTA/KABUPATEN
+          - SKALA NASIONAL
+          - STUDI KOMPARATIF ANTAR KOTA
+          - SULAWESI BARAT
+          - SULAWESI SELATAN
+          - SULAWESI TENGAH
+          - SULAWESI TENGGARA
+          - SULAWESI UTARA
+          - SUMATERA BARAT
+          - SUMATERA SELATAN
+          - SUMATERA UTARA
+        - name: kota
+          description: Kota/Kabupaten domisili pendaftar/penyelenggara, digabungkan dari kolom city pada berbagai tabel sumber.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: topik
+          description: Topik atau judul pengajuan, digabungkan dari kolom seperti research_topic, ip_name, contribution_title, festival_name pada berbagai tabel sumber.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: subsektor
+          description: Subsektor ekonomi kreatif terkait pengajuan, digabungkan dari kolom main_subsector pada berbagai tabel sumber.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: tanggal_daftar_wib
+          description: Tanggal dan waktu pendaftaran/submit program (created_at pada tabel sumber).
+          type: TIMESTAMP
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: tanggal_id
+          description: Tanggal pendaftaran dalam format integer YYYYMMDD, foreign key ke dim_waktu.tanggal_id. Gunakan JOIN ke dim_waktu untuk agregasi pendaftar per bulan/kuartal/tahun.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys:
+          - referred_table: dim_waktu
+            referred_schema: iccn_dwh
+            referred_columns:
+            - tanggal_id
+            name: fact_partisipasi_program_tanggal_id_fkey
+      fact_pelaku_ekraf:
+        name: fact_pelaku_ekraf
+        schema_name: iccn_dwh
+        label: Pelaku Ekonomi Kreatif
+        domain: Pelaku Ekraf Sulawesi Tenggara
+        description: Tabel ini menyimpan data pelaku ekonomi kreatif di Sulawesi Tenggara (SULTRA). Satu baris mewakili satu pelaku usaha, dengan provinsi, lokasi hingga kelurahan, nama usaha dan pemilik, subsektor, serta badan usaha. Cakupan wilayah mengikuti nilai pada kolom provinsi. Periksa cakupannya sebelum menyebut hasil sebagai gambaran nasional. Jenis HKI yang dimiliki pelaku disimpan di bridge_pelaku_hki. Gabungkan kedua tabel melalui fact_pelaku_ekraf.sumber_id = bridge_pelaku_hki.sumber_pelaku_id. Satu pelaku dapat memiliki lebih dari satu HKI. Wilayah sudah tersedia di kolom provinsi dan kabupaten_kota; tabel ini TIDAK terhubung ke dim_wilayah (format berbeda, contoh 'KAB. BUTON' vs 'KABUPATEN BUTON'), jadi jangan JOIN ke dim_wilayah.
+        primary_keys:
+        - pelaku_id
+        foreign_keys: []
+        columns:
+        - name: pelaku_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: sumber_id
+          description: ID asli dari tabel sumber pelaku_ekrafs (data_ekraf_sulawesi_tenggara)
+          type: BIGINT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: provinsi
+          description: Nama provinsi lokasi usaha (huruf kapital). Saat ini seluruh data bernilai 'SULAWESI TENGGARA'.
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - SULAWESI TENGGARA
+        - name: kabupaten_kota
+          description: Nama kabupaten atau kota
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - KAB. BOMBANA
+          - KAB. BUTON
+          - KAB. BUTON SELATAN
+          - KAB. BUTON TENGAH
+          - KAB. BUTON UTARA
+          - KAB. KOLAKA
+          - KAB. KOLAKA UTARA
+          - KAB. KONAWE
+          - KAB. KONAWE KEPULAUAN
+          - KAB. KONAWE SELATAN
+          - KAB. KONAWE UTARA
+          - KAB. MUNA
+          - KAB. MUNA BARAT
+          - KAB. WAKATOBI
+          - KOTA BAU BAU
+          - KOTA KENDARI
+        - name: kecamatan
+          description: Nama kecamatan
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: kelurahan
+          description: Nama kelurahan atau desa
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: nama_usaha
+          description: Nama resmi usaha atau perusahaan ekraf
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: nama_pemilik
+          description: Nama pemilik atau pimpinan usaha ekraf
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: subsektor
+          description: 'Nama sub sektor kreatif (contoh: Fashion, Kuliner, Kriya)'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Animasi
+          - Aplikasi
+          - Arsitektur
+          - Desain Grafis
+          - Desain Interior
+          - Desain Produk
+          - Fashion
+          - Fotografi
+          - Gim
+          - Kriya
+          - Kuliner
+          - Musik
+          - Penerbitan
+          - Periklanan
+          - Pertunjukan
+          - Radio/TV
+          - Rupa
+        - name: badan_usaha
+          description: 'Nama bentuk badan usaha (contoh: PT, CV, Perseorangan)'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+          enum_values:
+          - Badan Hukum Lainnya
+          - Belum Ada
+          - CV (Commanditaire Vennootschap)
+          - Koperasi
+          - Perseorangan
+          - Perseroan Terbatas (PT)
+          - Perusahaan Umum (Perum)
+          - Usaha Dagang (UD)
+      fact_sebaran_jejaring:
+        name: fact_sebaran_jejaring
+        schema_name: iccn_dwh
+        label: Sebaran Jejaring ICCN
+        domain: Jejaring ICCN Daerah
+        description: Tabel ini berisi daftar jejaring ICCN dari berbagai provinsi di Indonesia. Satu baris mewakili satu wilayah dan bisa memuat lebih dari satu jejaring, masing-masing di kolom nama_jejaring (terdata), status_tumbuh (tumbuh), atau status_tidak_aktif (tidak aktif); nilai '-' atau kosong berarti tidak ada, dan baris yang ketiganya '-' adalah wilayah tanpa jejaring. Baris juga memuat koordinator daerah, ketua, dan kontak. wilayah_id terhubung ke dim_wilayah melalui foreign key untuk memperoleh nama provinsi dan kabupaten/kota.
+        primary_keys:
+        - fact_id
+        foreign_keys:
+        - constrained_columns:
+          - wilayah_id
+          referred_table: dim_wilayah
+          referred_schema: iccn_dwh
+          referred_columns:
+          - wilayah_id
+          name: fact_sebaran_jejaring_wilayah_id_fkey
+        columns:
+        - name: fact_id
+          description: Primary Key
+          type: INTEGER
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: wilayah_id
+          description: ID wilayah, foreign key ke dim_wilayah.wilayah_id. Gunakan JOIN ke dim_wilayah ON wilayah_id = dim_wilayah.wilayah_id untuk mendapatkan nama provinsi dan kabupaten/kota.
+          type: INTEGER
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys:
+          - referred_table: dim_wilayah
+            referred_schema: iccn_dwh
+            referred_columns:
+            - wilayah_id
+            name: fact_sebaran_jejaring_wilayah_id_fkey
+        - name: nama_jejaring
+          description: Nama jejaring yang terdata
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: korda
+          description: Nama koordinator daerah (Korda)
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: ketua
+          description: Nama ketua jejaring
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: no_kontak
+          description: Nomor kontak (HP/WhatsApp) jejaring. Bernilai '-' jika tidak ada; format tidak seragam (dengan/tanpa awalan 0).
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: status_tumbuh
+          description: Nama jejaring tumbuh
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: status_tidak_aktif
+          description: Nama jejaring yang tidak aktif
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+      iccn_knowledge_stats:
+        name: iccn_knowledge_stats
+        schema_name: iccn_dwh
+        label: Knowledge Base ICCN
+        domain: Knowledge Base
+        description: 'Daftar dokumen yang sudah masuk ke knowledge base ICCN. Satu baris = satu dokumen. Sumber dokumen (source_type): Notion, Google Drive, Database (DWH), dan Document Upload (upload manual via dashboard ICCN).'
+        primary_keys:
+        - item_id
+        foreign_keys: []
+        columns:
+        - name: item_id
+          description: Primary Key
+          type: TEXT
+          is_primary_key: true
+          is_nullable: false
+          foreign_keys: []
+        - name: source_type
+          description: 'Jenis sumber dokumen. Nilai: NOTION, DRIVE (Google Drive), DATABASE (DWH), DOCUMENT (Document Upload, upload manual via dashboard ICCN).'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+        - name: source_name
+          description: 'Nama sumber dokumen. DRIVE: nama folder Google Drive; NOTION: judul database Notion; DOCUMENT: "Document Upload".'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: title
+          description: Judul dokumen / nama file
+          type: TEXT
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+        - name: file_type
+          description: 'Ekstensi file (contoh: pdf, docx, xlsx, md); bernilai notion untuk halaman Notion.'
+          type: TEXT
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: is_private
+          description: Dokumen boleh dipakai oleh agent private (internal)
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+        - name: is_public
+          description: Dokumen boleh dipakai oleh agent public
+          type: BOOLEAN
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+        - name: created_at
+          description: Waktu dokumen ditambahkan ke knowledge base
+          type: TIMESTAMP
+          is_primary_key: false
+          is_nullable: false
+          foreign_keys: []
+        - name: ingested_at
+          description: Waktu dokumen selesai diproses (ingest) ke knowledge base
+          type: TIMESTAMP
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: deleted_at
+          description: Waktu dokumen dihapus; NULL jika masih aktif
+          type: TIMESTAMP
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+        - name: source_last_sync_at
+          description: Waktu terakhir sumber dokumen berhasil disinkronkan; NULL untuk Document Upload
+          type: TIMESTAMP
+          is_primary_key: false
+          is_nullable: true
+          foreign_keys: []
+business_concepts:
+- name: Persentase UMKM Digital
+  synonyms:
+  - Tingkat Digitalisasi UMKM
+  - UMKM go digital
+  - UMKM online
+  - adopsi digital UMKM
+  description: |-
+    Persentase UMKM yang sudah go digital (memasarkan produk secara online) dari seluruh UMKM.
+    Tiap baris sudah agregat per kelurahan, jadi rasio dihitung dari total (SUM / SUM), bukan rata-rata rasio per kelurahan.
+  sql: 100.0 * SUM(jumlah_umkm_digital) / NULLIF(SUM(jumlah_umkm), 0)
+  columns:
+  - iccn_dwh.fact_insight_umkm.jumlah_umkm_digital
+  - iccn_dwh.fact_insight_umkm.jumlah_umkm
+- name: Persentase UMKM Berlegalitas
+  synonyms:
+  - UMKM berizin
+  - UMKM ber-NIB
+  - legalitas UMKM
+  - UMKM punya izin usaha
+  description: |-
+    Persentase UMKM yang sudah memiliki legalitas usaha (izin/NIB) dari seluruh UMKM.
+    Tiap baris sudah agregat per kelurahan, jadi rasio dihitung dari total (SUM / SUM).
+  sql: 100.0 * SUM(jumlah_umkm_berlegalitas) / NULLIF(SUM(jumlah_umkm), 0)
+  columns:
+  - iccn_dwh.fact_insight_umkm.jumlah_umkm_berlegalitas
+  - iccn_dwh.fact_insight_umkm.jumlah_umkm
+- name: Persentase IKM Berizin
+  synonyms:
+  - IKM berizin
+  - perizinan IKM
+  - IKM legal
+  - tingkat perizinan industri kecil menengah
+  description: |-
+    Persentase industri kecil menengah (IKM) yang sudah memiliki izin dari seluruh IKM.
+    Rata-rata rasio per kelurahan memberi angka yang terlalu tinggi; hitung SUM / SUM.
+  sql: 100.0 * SUM(ikm_berizin) / NULLIF(SUM(jumlah_ikm), 0)
+  columns:
+  - iccn_dwh.fact_insight_ikm.ikm_berizin
+  - iccn_dwh.fact_insight_ikm.jumlah_ikm
+- name: Produktivitas Tenaga Kerja IKM
+  synonyms:
+  - nilai produksi per pekerja
+  - output per tenaga kerja IKM
+  - produktivitas pekerja IKM
+  description: Nilai produksi IKM (Rupiah) per tenaga kerja, dihitung dari total nilai produksi dibagi total tenaga kerja.
+  sql: SUM(total_nilai_produksi)::numeric / NULLIF(SUM(total_tenaga_kerja), 0)
+  columns:
+  - iccn_dwh.fact_insight_ikm.total_nilai_produksi
+  - iccn_dwh.fact_insight_ikm.total_tenaga_kerja
+- name: Jumlah Berita Terbit
+  synonyms:
+  - berita terbit
+  - artikel terbit
+  - jumlah publikasi berita
+  - jumlah artikel
+  description: |-
+    Jumlah berita/artikel ICCN yang sudah live, yaitu berstatus published atau external (keduanya berita ICCN).
+    Status scheduled dan revised belum terbit, jadi tidak dihitung.
+  sql: COUNT(*)
+  filters:
+  - status IN ('published', 'external')
+  columns:
+  - iccn_dwh.fact_berita.status
+  time_column: iccn_dwh.fact_berita.tanggal_publish_wib
+- name: Rata-rata Views per Berita
+  synonyms:
+  - rata-rata pembaca berita
+  - rata-rata pembaca artikel
+  - avg views berita
+  - engagement berita
+  description: Rata-rata jumlah views per berita yang sudah live (published atau external). Berita scheduled dan revised tidak dihitung.
+  sql: AVG(views)
+  filters:
+  - status IN ('published', 'external')
+  columns:
+  - iccn_dwh.fact_berita.views
+  - iccn_dwh.fact_berita.status
+  time_column: iccn_dwh.fact_berita.tanggal_publish_wib
+- name: Jumlah Jejaring ICCN
+  synonyms:
+  - total jejaring ICCN
+  - jumlah komunitas jejaring
+  - banyaknya jejaring daerah
+  description: |-
+    Jumlah jejaring ICCN yang terdata (terdata, tumbuh, maupun tidak aktif).
+    Tiap kolom nama yang terisi adalah satu jejaring tersendiri, jadi satu baris bisa berisi dua jejaring dan COUNT(*) per baris salah.
+    '-' atau kosong berarti tidak ada jejaring; baris yang ketiganya '-' adalah wilayah tanpa jejaring.
+  sql: |-
+    COUNT(*) FILTER (WHERE TRIM(nama_jejaring) NOT IN ('', '-'))
+    + COUNT(*) FILTER (WHERE TRIM(status_tumbuh) NOT IN ('', '-'))
+    + COUNT(*) FILTER (WHERE TRIM(status_tidak_aktif) NOT IN ('', '-'))
+  columns:
+  - iccn_dwh.fact_sebaran_jejaring.nama_jejaring
+  - iccn_dwh.fact_sebaran_jejaring.status_tumbuh
+  - iccn_dwh.fact_sebaran_jejaring.status_tidak_aktif
+- name: Jumlah Jejaring Tumbuh
+  synonyms:
+  - jejaring tumbuh
+  - komunitas tumbuh
+  - jejaring yang sedang tumbuh
+  description: Jumlah jejaring berstatus tumbuh. Kolom status_tumbuh berisi nama jejaringnya; '-' atau kosong berarti bukan jejaring tumbuh.
+  sql: COUNT(*)
+  filters:
+  - TRIM(status_tumbuh) NOT IN ('', '-')
+  columns:
+  - iccn_dwh.fact_sebaran_jejaring.status_tumbuh
+- name: Persentase Pelaku Ekraf ber-HKI
+  synonyms:
+  - pelaku ekraf punya HKI
+  - pelaku ekraf ber-HAKI
+  - kepemilikan HKI pelaku ekraf
+  - pelaku ekraf dengan merek atau hak cipta
+  description: |-
+    Persentase pelaku ekonomi kreatif (Sulawesi Tenggara) yang memiliki minimal satu HKI.
+    Satu pelaku bisa punya beberapa HKI, jadi hitung pelaku unik (COUNT DISTINCT); LEFT JOIN agar pelaku tanpa HKI tetap jadi penyebut.
+  sql: 100.0 * COUNT(DISTINCT h.sumber_pelaku_id) / NULLIF(COUNT(DISTINCT p.sumber_id), 0)
+  from: iccn_dwh.fact_pelaku_ekraf p LEFT JOIN iccn_dwh.bridge_pelaku_hki h ON h.sumber_pelaku_id = p.sumber_id
+  columns:
+  - iccn_dwh.bridge_pelaku_hki.sumber_pelaku_id
+  - iccn_dwh.fact_pelaku_ekraf.sumber_id

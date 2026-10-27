@@ -23,7 +23,7 @@
 
 - Pengaturan dari `ontology` sampai `save_parent` disimpan di metadata dokumen, jadi retry atau resume dokumen tetap memakai nilai aslinya.
 - Parameter berlaku per dokumen, kecuali `prune_isolated`: penghapusan berjalan sekali di akhir batch, dan hanya mencakup dokumen yang diingest dengan `prune_isolated=True`.
-- Ukuran chunk dan konkurensi bukan parameter pemanggilan, melainkan ENV: `PARENT_MAX_TOKENS` (parent = satu section dokumen; hanya section yang lebih besar dipotong di antara paragraf), `CHILD_CHUNK_SIZE`, `CHILD_CHUNK_OVERLAP`, `MAX_GLEANING`, `MAX_EXTRACT_INPUT_TOKENS`, `MAX_PARALLEL_INGESTION`, `EMBEDDING_BATCH_NUM`.
+- Ukuran chunk dan konkurensi bukan parameter pemanggilan, melainkan ENV: `PARENT_CHUNK_SIZE` (parent = satu section dokumen; hanya section yang lebih besar dipotong di antara paragraf), `CHILD_CHUNK_SIZE`, `CHILD_CHUNK_OVERLAP`, `MAX_GLEANING`, `MAX_EXTRACT_INPUT_TOKENS`, `MAX_PARALLEL_INGESTION`, `EMBEDDING_BATCH_NUM`.
 - `parse_file(file_path)` hanya menerima path file dan mengembalikan `content_list`.
 
 ```python
@@ -114,3 +114,7 @@ never_merge:                  # pasangan yang tidak boleh digabung (opsional)
 
 - Huruf kapital, tanda baca, dan urutan kata diabaikan saat mencocokkan, jadi tulis varian hanya bila katanya berbeda.
 - Satu alias tidak boleh menunjuk ke dua `canonical` berbeda (error saat load).
+
+### Knowledge Graph Visualization : 
+```uv run --extra ingestion --extra dashboard --with uvicorn uvicorn kg_viewer:app --app-dir examples
+```

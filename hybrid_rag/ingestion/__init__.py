@@ -8,6 +8,7 @@ _EXPORTS = {
     "parse_file": "hybrid_rag.ingestion.parser.router",
     "SUPPORTED_INGEST_EXTENSIONS": "hybrid_rag.ingestion.parser.router",
     "delete_document": "hybrid_rag.ingestion.deletion.pipeline",
+    "ingest_db_schema": "hybrid_rag.ingestion.db_schema.pipeline",
     "consolidate_entities": "hybrid_rag.ingestion.knowledge_graph.entity_consolidation",
     "redact_content_list": "hybrid_rag.ingestion.pii_redaction",
     "DocStatus": "hybrid_rag.core.base",
