@@ -67,7 +67,8 @@ mount_dashboard(app, prefix="/kg")   # penampil di /kg/, API di /kg/api/*
 - Halaman statisnya sudah ter-build di `hybrid_rag/dashboard/static`. Bila perlu build ulang: `bun run build` di folder `dashboard/`.
 
 Terminal Command :
-```uv run --extra ingestion --extra dashboard --with uvicorn uvicorn kg_viewer:app --app-dir examples
+```bash 
+uv run --extra ingestion --extra dashboard --with uvicorn uvicorn kg_viewer:app --app-dir examples
 ```
 
 ### Membuat Entity Registry Baru
