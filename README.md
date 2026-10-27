@@ -1,8 +1,7 @@
 ### TO DO :
-1. Benchmark amazon titan text embedding v2 vs amazon nova multimodal embedding v1
-2. Benchmark amazon bedrock reranker
-3. Strategi consume link S3 gambar yang direturn saat retrieval
-4. Layout Aware Detection Chunking
+1. Benchmarking amazon titan text embedding v2 vs amazon nova multimodal embedding v1
+2. Benchmarking NDCG & MRR metrics on amazon bedrock reranker 
+3. Metadata filtering for graph search
 
 ### Parameter Ingestion
 
@@ -67,32 +66,9 @@ mount_dashboard(app, prefix="/kg")   # penampil di /kg/, API di /kg/api/*
 - API membuka graph semua workspace tanpa autentikasi. Uvicorn mendengarkan `127.0.0.1` secara bawaan; bila dibuka ke jaringan, pasang autentikasi lewat `mount_dashboard(app, dependencies=[...])`.
 - Halaman statisnya sudah ter-build di `hybrid_rag/dashboard/static`. Bila perlu build ulang: `bun run build` di folder `dashboard/`.
 
-### Entity Reconciliation
-
-path = Path("examples/susunan.pdf")
-async with parse_file(path) as content_list:
-    async with write_pool.lease("workspace_h") as rag:
-        await rag.insert_content_list(
-            content_list,
-            file_path=path,
-            doc_id="doc-12",
-            entity_registry="iccn",     
-            entity_resolution=True,
-            entity_resolution_llm=True,
-            orphan_repair=True,
-            prune_isolated=True,
-        )
-
-| Bagian | Kapan jalan | Keterangan |
-| --- | --- | --- |
-| **Fitur 1:** aturan (huruf kapital, tanda baca, urutan kata, `Long (ABBR)`) + alias YAML + registry | **Otomatis setiap ingest** | Aktif bila `entity_resolution=True` (default) |
-| **Fitur 2:** LLM menilai pasangan yang tidak bisa diputuskan aturan | **Otomatis setiap ingest** | Aktif bila `entity_resolution_llm=True` (default) |
-| **Fitur 3 :** alias ke properti node dan teks entity VDB | **Otomatis setiap ingest** | Terjadi setiap kali ada nama yang digabung Fase 1/2 |
-| Repair relasi entity yatim (satu panggilan LLM untuk chunk yang punya entity tanpa relasi) | **Otomatis setiap ingest** | Aktif bila `orphan_repair=True` (default) |
-| Hapus entity yang tetap tanpa relasi, di akhir batch | **Otomatis setiap ingest** | Aktif bila `prune_isolated=True` (default); node image/table/equation dikecualikan |
-| Rebuild setelah delete dokumen | **Otomatis setiap delete** | Nama dipetakan lewat registry, alias dihitung ulang |
-| **Fase 3b:** konsolidasi (`consolidate_entities`) | **Hanya bila Anda panggil** | Membersihkan duplikat yang lolos dari ingest (dokumen paralel, Fase 2 gagal atau dimatikan) |
-
+Terminal Command :
+```uv run --extra ingestion --extra dashboard --with uvicorn uvicorn kg_viewer:app --app-dir examples
+```
 
 ### Membuat Entity Registry Baru
 
@@ -114,7 +90,3 @@ never_merge:                  # pasangan yang tidak boleh digabung (opsional)
 
 - Huruf kapital, tanda baca, dan urutan kata diabaikan saat mencocokkan, jadi tulis varian hanya bila katanya berbeda.
 - Satu alias tidak boleh menunjuk ke dua `canonical` berbeda (error saat load).
-
-### Knowledge Graph Visualization : 
-```uv run --extra ingestion --extra dashboard --with uvicorn uvicorn kg_viewer:app --app-dir examples
-```
