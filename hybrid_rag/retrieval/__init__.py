@@ -1,6 +1,6 @@
 """Retrieval — a query in, a context string out. Never an answer.
 
-``pipeline.py`` is the outer boundary (``retrieve_context``). Inside:
+``pipeline.py`` is the outer boundary (``retrieve_context`` and its variants). Inside:
 
     rag.py        RetrievalRAG: the read-side storages, ``aretrieve``
     query.py      keyword extraction + the 4-stage orchestration
@@ -21,6 +21,7 @@ _EXPORTS = {
     "workspace_pool": "hybrid_rag.retrieval.workspace",
     "retrieve_context": "hybrid_rag.retrieval.pipeline",
     "retrieve_context_without_relations": "hybrid_rag.retrieval.pipeline",
+    "retrieve_context_cross_workspaces": "hybrid_rag.retrieval.pipeline",
     "RetrievalResult": "hybrid_rag.retrieval.pipeline",
     "QueryParam": "hybrid_rag.retrieval.types",
     "QueryResult": "hybrid_rag.retrieval.types",

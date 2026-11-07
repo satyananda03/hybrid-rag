@@ -1,9 +1,11 @@
 """What retrieval takes in and hands back."""
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from hybrid_rag.config import settings
+
+CitationStyle = Literal["location", "document"]
 
 
 @dataclass
@@ -41,6 +43,17 @@ class QueryParam:
     """Sertakan sitasi: ``reference_id`` di tiap chunk, Reference Document List di
     context (satu entri per file + lokasi), dan ``data.references``. False untuk
     pemanggil yang hanya butuh teks bukti; tidak ada lookup lokasi sama sekali."""
+
+    citation_style: CitationStyle = "location"
+    """How sources read. ``location``: the file and where in it (``a.pdf, hal. 3``). ``document``:
+    the citation the chunker gave the chunk (``Pasal 5, PERATURAN PRESIDEN REPUBLIK INDONESIA NOMOR 39 TAHUN 2023``), else the
+    file name; never a page."""
+
+    keywords: tuple[list[str], list[str]] | None = None
+    """``(high_level, low_level)`` already extracted for this query (what ``extract_keywords_only``
+    returns). Set: extraction is skipped; the empty-keyword fallbacks and stages 1-4 run as usual.
+    None (default): keywords are extracted from the query. Set by the cross-workspace search so every
+    workspace is searched with the same keywords from one extraction."""
 
     return_chunk_only: bool = False
     """Context hanya berisi ``<document_chunks>`` (+ references bila ada), tanpa blok

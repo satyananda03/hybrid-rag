@@ -342,7 +342,7 @@ class _AnalyzeMixin:
                 "modal_entity_name": entity_info["entity_name"],
                 "original_type": data["content_type"],
             }
-            # Satu kontrak dengan chunk teks (parent_child.py): lokasi di ``sidecar``,
+            # Satu kontrak dengan chunk teks (parent_child_chunker): lokasi di ``sidecar``,
             # dan tanpa sidecar bila sumbernya tidak berhalaman.
             page = data["item_info"]["page_idx"]
             if page is not None:

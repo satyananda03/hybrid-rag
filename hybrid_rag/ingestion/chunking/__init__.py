@@ -1,5 +1,5 @@
 from .contextualize import contextualize_children
-from .parent_child import ParentChildChunker, redirect_source_ids
+from .parent_child_chunker import ParentChildChunker, redirect_source_ids
 
 __all__ = [
     "ParentChildChunker",

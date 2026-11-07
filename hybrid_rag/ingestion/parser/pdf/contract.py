@@ -8,7 +8,8 @@ so nothing downstream changes when the parser does.
 
 Rules a parser keeps, because the chunker and the multimodal pipeline read them:
 
-* Items are in reading order; page headers, footers and page numbers are left out.
+* Items are in reading order; footers, page numbers and page headers that repeat across
+  pages are left out. A header found on one page stays: it can be content.
 * One ``text`` item per layout block (paragraph, list item, heading).
 * A heading is a ``text`` item with ``text_level`` (1 = document title, 2 = section
   header), or a markdown ``#`` line in its text.

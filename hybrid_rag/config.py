@@ -91,8 +91,8 @@ class RagSettings(BaseSettings):
     unoserver_port: int = Field(default=2003, validation_alias="UNOSERVER_PORT")
     office_convert_timeout: int = Field(default=120, validation_alias="OFFICE_CONVERT_TIMEOUT")
     max_parallel_office_convert: int = Field(default=1, validation_alias="MAX_PARALLEL_OFFICE_CONVERT")
-    figure_min_width_px: int = Field(default=500, validation_alias="FIGURE_MIN_WIDTH_PX")
-    figure_min_height_px: int = Field(default=500, validation_alias="FIGURE_MIN_HEIGHT_PX")
+    figure_min_width_px: int = Field(default=600, validation_alias="FIGURE_MIN_WIDTH_PX")
+    figure_min_height_px: int = Field(default=600, validation_alias="FIGURE_MIN_HEIGHT_PX")
     figure_min_area_ratio: float = Field(default=0.01, validation_alias="FIGURE_MIN_AREA_RATIO")
     s3_bucket: Optional[str] = Field(default=None, validation_alias="S3_BUCKET")
     s3_access_key_id: Optional[str] = Field(default=None, validation_alias="S3_ACCESS_KEY_ID")
@@ -148,7 +148,3 @@ class RagSettings(BaseSettings):
             raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
 
 settings = RagSettings()
-settings.extract_llm_model = "moonshotai.kimi-k2.5"  # sementara: abaikan EXTRACT_LLM_MODEL di .env
-settings.top_k = 3
-settings.chunk_top_k = 7
-settings.rerank_max_async = 2

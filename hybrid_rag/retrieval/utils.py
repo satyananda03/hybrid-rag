@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from hybrid_rag.core.base import BaseKVStorage, BaseVectorStorage
 
 from hybrid_rag.core.chunk_schema import format_location
+from hybrid_rag.retrieval.types import CitationStyle
 import logging
 
 logger = logging.getLogger(__name__)
@@ -325,9 +326,11 @@ def convert_to_user_format(
     for i, chunk in enumerate(chunks):
         content = chunk.get("content", "")
         image = IMAGE_PATH_PATTERN.search(content)
-        # Citation fields exist only when QueryParam.include_citations attached them.
+        # Citation fields exist only when QueryParam.include_citations attached them; ``rerank_score``
+        # only when rerank ran (it lets results of several workspaces be ranked together).
         chunk_data = {
-            **{k: chunk[k] for k in ("reference_id", "page_start", "page_end") if k in chunk},
+            **{k: chunk[k] for k in ("reference_id", "page_start", "page_end", "citation", "content_headings", "rerank_score")
+               if k in chunk},
             "content": content,
             "file_path": chunk.get("file_path", "unknown_source"),
             "chunk_id": chunk.get("chunk_id", ""),
@@ -363,21 +366,27 @@ def convert_to_user_format(
 
 def generate_reference_list_from_chunks(
     chunks: list[dict],
+    citation_style: CitationStyle = "location",
 ) -> tuple[list[dict], list[dict]]:
     """Give each chunk a ``reference_id``: one per (file, location), most cited first.
+
+    With ``citation_style="document"``, one per (file, citation) instead, without pages.
 
     Ties keep first-appearance order; chunks without a known file get ``""``.
     Returns ``(reference_list, chunks_with_reference_ids)``. A reference is
     ``{"reference_id", "file_path"}`` plus ``"location"`` (``hal. 3–4``,
-    ``sheet "Rekap"``) when the chunk has one.
+    ``sheet "Rekap"``) or ``"citation"`` when the chunk has one.
     """
 
     def key(chunk: dict) -> tuple[str, str | None] | None:
         file_path = chunk.get("file_path", "")
         if not file_path or file_path == "unknown_source":
             return None
+        if citation_style == "document":
+            return file_path, chunk.get("citation")
         return file_path, format_location(chunk.get("page_start"), chunk.get("page_end"))
 
+    detail = "citation" if citation_style == "document" else "location"
     keys = [key(chunk) for chunk in chunks]
     counts = Counter(k for k in keys if k)
     # Counter keeps insertion order and sorted() is stable, so ties stay in appearance order.
@@ -385,7 +394,7 @@ def generate_reference_list_from_chunks(
     ref_ids = {k: str(i) for i, k in enumerate(ranked, 1)}
 
     reference_list = [
-        {"reference_id": ref_ids[k], "file_path": k[0], **({"location": k[1]} if k[1] else {})}
+        {"reference_id": ref_ids[k], "file_path": k[0], **({detail: k[1]} if k[1] else {})}
         for k in ranked
     ]
     updated_chunks = [{**chunk, "reference_id": ref_ids.get(k, "")} for chunk, k in zip(chunks, keys)]

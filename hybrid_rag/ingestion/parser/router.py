@@ -37,7 +37,7 @@ def _read_content_list(path: Path) -> list[dict]:
     return data
 
 def _with_layout(content_list: list[dict], layout: str) -> list[dict]:
-    """Tandai item teks dengan layout dokumen — kunci ``chunking.parent_child.CHUNKERS``.
+    """Tandai item teks dengan layout dokumen — kunci ``chunking.parent_child_chunker.CHUNKERS``.
 
     Hanya router yang tahu sebuah PDF menjadi dek slide atau dokumen biasa, jadi di
     sinilah layout dicatat. Nilai yang sudah dibawa content list (prebuilt) dihormati.

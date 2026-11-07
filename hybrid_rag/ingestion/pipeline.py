@@ -1485,7 +1485,7 @@ class _PipelineMixin:
             contextualize_children,
             redirect_source_ids,
         )
-        from hybrid_rag.ingestion.chunking.parent_child import (
+        from hybrid_rag.ingestion.chunking.parent_child_chunker import (
             CHILD_CHUNK_SIZE,
             CHILD_CHUNK_OVERLAP,
             PARENT_MAX_TOKENS,
@@ -1503,7 +1503,9 @@ class _PipelineMixin:
 
         progress.stage("chunk")
         logger.info(f"Chunking parent-child, doc_id: {doc_id}")
-        parent_result, child_result = ParentChildChunker(self.tokenizer).split(content, chunk_options)
+        parent_result, child_result = ParentChildChunker(self.tokenizer).split(
+            content, chunk_options, file_path if has_known_document_source(file_path) else None
+        )
 
         # === Parent-Child storage & extraction === #
         # Parent dipakai untuk ekstraksi entitas, dan — bila ``save_parent`` —

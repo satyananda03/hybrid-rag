@@ -46,10 +46,11 @@ def text_coverage(raw_page: dict) -> float:
 
 
 def margin_items(raw_page: dict) -> tuple[list, list]:
-    """Header, footer, dan nomor halaman yang dibuang ``reconstruct_content_list``, sebagai item ``text``.
+    """Footer dan nomor halaman yang dibuang ``reconstruct_content_list``, sebagai item ``text``.
 
-    Letaknya, bukan tipenya, yang menentukan tempatnya: di atas tengah halaman ke awal content
-    list, di bawah ke akhir (nomor halaman di pojok atas ikut header-nya). Urutan baca Textract.
+    Header tidak perlu: satu halaman tidak punya header yang berulang, jadi sudah ikut content
+    list. Letaknya, bukan tipenya, yang menentukan tempatnya: di atas tengah halaman ke awal
+    content list, di bawah ke akhir. Urutan baca Textract.
     """
     blocks = raw_page.get("Blocks") or []
     page = next((b for b in blocks if b["BlockType"] == "PAGE"), None)

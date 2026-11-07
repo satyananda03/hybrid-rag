@@ -2,17 +2,21 @@
 import functools
 import json
 import os
+import re
 import uuid
 import warnings
+from collections import Counter
 
 from hybrid_rag.ingestion.parser.figures import is_large_enough, save_for_vlm
 from .blocks import (
     bbox_iou,
     bbox_to_pixels,
+    block_top,
     build_block_map,
     get_children,
     get_plain_text,
     is_vertical_text,
+    lines_in_reading_order,
 )
 from .pages import render_page_image
 from .tables import build_table_markdown, get_table_caption_footnote
@@ -23,10 +27,10 @@ LAYOUT_TEXT_TYPES = {
     "LAYOUT_SECTION_HEADER",
     "LAYOUT_LIST",
     "LAYOUT_KEY_VALUE",
+    "LAYOUT_HEADER",  # kecuali yang berulang antar-halaman: _running_header_ids
 }
 
 IGNORED_LAYOUT_TYPES = {
-    "LAYOUT_HEADER",
     "LAYOUT_FOOTER",
     "LAYOUT_PAGE_NUMBER",
 }
@@ -116,7 +120,7 @@ def _table_item(block: dict, bbox: dict, table_blocks: list, used_table_ids: set
     }
 
 
-def _page_items(page_data: dict, data: dict, images_dir: str) -> list:
+def _page_items(page_data: dict, data: dict, images_dir: str, running_headers: set) -> list:
     """Satu halaman raw Textract → item content list sesuai urutan baca PAGE."""
     page_idx = page_data["page_idx"]
     if page_data.get("error"):
@@ -143,12 +147,16 @@ def _page_items(page_data: dict, data: dict, images_dir: str) -> list:
     page_image = functools.cache(lambda: render_page_image(data["source_pdf"], page_idx, enhance=False).convert("RGB"))
 
     items = []
-    for block in ordered_children:
+    for block in _layout_children_with_list_lines(ordered_children, page_child_ids, block_map):
         btype = block["BlockType"]
         bbox = block["Geometry"]["BoundingBox"]
-        if btype in IGNORED_LAYOUT_TYPES or _items_listed_on_page(block, page_child_ids):
+        if (
+            btype in IGNORED_LAYOUT_TYPES
+            or _items_listed_on_page(block, page_child_ids)
+            or (page_idx, block["Id"]) in running_headers
+        ):
             continue
-        if btype in LAYOUT_TEXT_TYPES:
+        if btype in LAYOUT_TEXT_TYPES or btype == "LINE":
             item = _text_item(block, block_map, page_idx)
         elif btype == "LAYOUT_FIGURE":
             item = _figure_item(bbox, page_idx, img_w, img_h, page_image, images_dir)
@@ -176,6 +184,68 @@ def _items_listed_on_page(block: dict, page_child_ids: set) -> bool:
     return bool(item_ids) and all(i in page_child_ids for i in item_ids)
 
 
+def _layout_children_with_list_lines(page_children: list, page_child_ids: set, block_map: dict) -> list:
+    """PAGE's layout blocks, plus the LINEs that a skipped list holds directly.
+
+    Textract can hang a LINE on a ``LAYOUT_LIST`` beside its items, although its docs say a
+    list points at ``LAYOUT_TEXT``. No item reads that LINE and the list is skipped
+    (``_items_listed_on_page``), so it goes in here: before the list's first item that sits
+    lower on the page, else after its last one. A LINE without a letter or digit is noise.
+    """
+    children = [block for block in page_children if block["BlockType"] != "LINE"]
+    for block in list(children):
+        if not _items_listed_on_page(block, page_child_ids):
+            continue
+        members = get_children(block, block_map)
+        placed = [block, *(member for member in members if member["BlockType"] != "LINE")]
+        for line in lines_in_reading_order([member for member in members if member["BlockType"] == "LINE"]):
+            if not any(char.isalnum() for char in line.get("Text", "")):
+                continue
+            below = next((member for member in placed if block_top(member) > block_top(line)), None)
+            if below is None:
+                children.insert(children.index(placed[-1]) + 1, line)
+                placed.append(line)
+            else:
+                children.insert(children.index(below), line)
+    return children
+
+
+def _running_header_ids(pages: list) -> set:
+    """``(page_idx, Id)`` of the ``LAYOUT_HEADER`` blocks that repeat across pages.
+
+    Textract labels by position, so a header found on one page can be content (the
+    ``LAMPIRAN ... NOMOR ... TANGGAL`` of a decree) and stays. One repeats when its text is
+    in any text block of another page (``PRESIDEN REPUBLIK INDONESIA`` is labelled header
+    on one page, text on the rest), or another page's header differs only in digits
+    (``Hal. 2``). Digits count against other text: a ``Pasal 12`` labelled header must not
+    match the ``Pasal 5`` of another page.
+    """
+    pages_with_text: Counter = Counter()
+    pages_with_header: Counter = Counter()
+    headers = []
+    for page in pages:
+        blocks = page.get("Blocks") or []
+        block_map = build_block_map(blocks)
+        keys = {b["Id"]: _text_key(get_plain_text(b, block_map)) for b in blocks if b["BlockType"] in LAYOUT_TEXT_TYPES}
+        page_headers = [b["Id"] for b in blocks if b["BlockType"] == "LAYOUT_HEADER"]
+        pages_with_text.update(set(keys.values()))
+        pages_with_header.update({_digits_masked(keys[block_id]) for block_id in page_headers})
+        headers += [(page["page_idx"], block_id, keys[block_id]) for block_id in page_headers]
+    return {
+        (page_idx, block_id)
+        for page_idx, block_id, key in headers
+        if pages_with_text[key] > 1 or pages_with_header[_digits_masked(key)] > 1
+    }
+
+
+def _text_key(text: str) -> str:
+    return re.sub(r"[^\w]+", " ", text).strip().casefold()
+
+
+def _digits_masked(key: str) -> str:
+    return re.sub(r"\d", "0", key)
+
+
 def _demote_late_titles(content_list: list) -> None:
     """Only the first heading can be ``LAYOUT_TITLE``, "the main title of the document".
 
@@ -195,9 +265,11 @@ def reconstruct_content_list(data: dict, output_file: str = "formatted_output.js
     lokal. Mengunggahnya ke S3 dikerjakan ``parse_file`` untuk semua parser.
     """
     images_dir = data.get("images_dir", "")
+    pages = data.get("pages", [])
+    running_headers = _running_header_ids(pages)
     content_list = []
-    for page_data in data.get("pages", []):
-        content_list.extend(_page_items(page_data, data, images_dir))
+    for page_data in pages:
+        content_list.extend(_page_items(page_data, data, images_dir, running_headers))
     _demote_late_titles(content_list)
 
     if output_file is None:
@@ -206,7 +278,7 @@ def reconstruct_content_list(data: dict, output_file: str = "formatted_output.js
             output_file = os.path.join(tmp_dir, "formatted_parsing_result.json")
     if output_file:
         os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(content_list, f, ensure_ascii=False, indent=2, default=str)
-        print(f"[Textract] Formatted JSON disimpan ke: {output_file}")
+        # with open(output_file, "w", encoding="utf-8") as f:
+        #     json.dump(content_list, f, ensure_ascii=False, indent=2, default=str)
+        # print(f"[Textract] Formatted JSON disimpan ke: {output_file}")
     return content_list

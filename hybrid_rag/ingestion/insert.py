@@ -11,6 +11,7 @@ the RAG itself — storages, pipeline and processors are all reachable directly.
 
 import os
 from typing import Dict, List, Any
+from hybrid_rag.ingestion.chunking.legal_chunker import remove_regulation_headers
 from hybrid_rag.ingestion.multimodal.content import (
     separate_content,
 )
@@ -203,7 +204,7 @@ class _IngestionMixin:
             self.logger.info(f"  - {block_type}: {count}")
 
         # Step 1: Separate text and multimodal content
-        text_content, multimodal_items, chunk_options = separate_content(content_list)
+        text_content, multimodal_items, chunk_options = separate_content(remove_regulation_headers(content_list))
 
         # Step 2: Hand the whole document to the pipeline — the text body plus
         # the multimodal items riding along in full_docs. This runs even when the

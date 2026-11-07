@@ -68,9 +68,12 @@ async def kg_query(
     if not query:
         return None
 
-    hl_keywords, ll_keywords = await extract_keywords_only(
-        query, query_param, global_config, hashing_kv
-    )
+    if query_param.keywords is None:
+        hl_keywords, ll_keywords = await extract_keywords_only(
+            query, query_param, global_config, hashing_kv
+        )
+    else:
+        hl_keywords, ll_keywords = query_param.keywords
 
     logger.debug(f"High-level keywords: {hl_keywords}")
     logger.debug(f"Low-level  keywords: {ll_keywords}")

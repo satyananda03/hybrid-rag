@@ -297,6 +297,8 @@ async def _attach_sources(
         sidecar = row.get("sidecar") or {}
         if include_citations:
             chunk = {**chunk, "page_start": sidecar.get("page_start"), "page_end": sidecar.get("page_end")}
+            if sidecar.get("citation"):
+                chunk = {**chunk, "citation": sidecar["citation"]}
         if sidecar.get("images"):
             chunk = {**chunk, "images": sidecar["images"]}  # gambar slide halaman ini (slides.py)
         out.append(chunk)
@@ -462,6 +464,33 @@ def _render_chunk(chunk: dict, source: str, covered: set) -> str:
     return f"<chunk{attr_str}>\n{body}\n</chunk>"
 
 
+def _source(reference: dict) -> str:
+    """How a reference reads in the context: its citation, or the file then its location when known."""
+    if reference.get("citation"):
+        return reference["citation"]
+    return reference["file_path"] + (f", {reference['location']}" if reference.get("location") else "")
+
+
+def _render_chunks(chunks: list[dict], sources: dict[str, str]) -> str:
+    """The ``<chunk>`` blocks in order; ``sources`` maps a ``reference_id`` to its source text."""
+    covered = {
+        (chunk.get("file_path"), page)
+        for chunk in chunks
+        if not _IMAGE_CHUNK.search(chunk["content"])
+        for page in _pages(chunk)
+    }
+    return "\n\n".join(_render_chunk(chunk, sources.get(chunk.get("reference_id"), ""), covered) for chunk in chunks)
+
+
+def _references_block(sources: dict[str, str]) -> str:
+    """The ``<references>`` block, or nothing when no chunk has a source."""
+    if not sources:
+        return ""
+    return TEMPLATES["kg_query_references"].format(
+        reference_list_str="\n".join(f"[{ref_id}] {source}" for ref_id, source in sources.items())
+    )
+
+
 async def _build_context_str(
     entities_context: list[dict],
     relations_context: list[dict],
@@ -499,22 +528,9 @@ async def _build_context_str(
 
     reference_list: list[dict] = []
     if include_citations:
-        reference_list, truncated_chunks = generate_reference_list_from_chunks(truncated_chunks)
+        reference_list, truncated_chunks = generate_reference_list_from_chunks(truncated_chunks, query_param.citation_style)
 
-    sources = {
-        ref["reference_id"]: ref["file_path"] + (f", {ref['location']}" if ref.get("location") else "")
-        for ref in reference_list
-    }
-    covered = {
-        (chunk.get("file_path"), page)
-        for chunk in truncated_chunks
-        if not _IMAGE_CHUNK.search(chunk["content"])
-        for page in _pages(chunk)
-    }
-    chunks_context = [
-        _render_chunk(chunk, sources.get(chunk.get("reference_id"), ""), covered)
-        for chunk in truncated_chunks
-    ]
+    sources = {ref["reference_id"]: _source(ref) for ref in reference_list}
 
     # [Ref] only points at chunks actually in this context, so a KG fact is never cited to a missing source.
     chunk_refs = {c.get("chunk_id"): c["reference_id"] for c in truncated_chunks if c.get("reference_id")}
@@ -537,17 +553,14 @@ async def _build_context_str(
         + cite((relation_id_to_original or {}).get((r["entity1"], r["entity2"])))
         for r in relations_context
     )
-    text_units_str = "\n\n".join(chunks_context)
-    reference_list_str = "\n".join(f"[{ref_id}] {source}" for ref_id, source in sources.items())
-
     logger.info(
-        f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(chunks_context)} chunks"
+        f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
     )
 
     # not necessary to use LLM to generate a response
     # Mode chunk-only tanpa chunk = kosong, walau KG menemukan entitas/relasi.
     has_kg = not query_param.return_chunk_only and (entities_context or relations_context)
-    if not has_kg and not chunks_context:
+    if not has_kg and not truncated_chunks:
         # Return empty raw data structure when no entities/relations
         empty_raw_data = convert_to_user_format(
             [],
@@ -581,10 +594,8 @@ async def _build_context_str(
     result = kg_context_template.format(
         entities_str=entities_str,
         relations_str=relations_str,
-        text_chunks_str=text_units_str,
-        references_block=TEMPLATES["kg_query_references"].format(reference_list_str=reference_list_str)
-        if reference_list
-        else "",
+        text_chunks_str=_render_chunks(truncated_chunks, sources),
+        references_block=_references_block(sources),
     )
 
     # Always return both context and complete data structure (unified approach)

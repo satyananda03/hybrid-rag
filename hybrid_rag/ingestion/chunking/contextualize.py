@@ -4,11 +4,9 @@ import logging
 from collections.abc import Callable
 from functools import cache
 from typing import Any
-
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
-
 from hybrid_rag import providers
 from hybrid_rag.config import NOVA_MODELS, settings
 from hybrid_rag.ingestion.knowledge_graph.entity_resolution import acronym_glossary
@@ -60,9 +58,6 @@ def contextualize_chain() -> Runnable:
         | providers.get_llm(
             model_id=settings.contextualize_llm_model,
             temperature=0.0,
-            # The answer is one short paragraph, but a hard cap would truncate it
-            # mid-sentence and poison the chunk it is prepended to. On Nova the cap
-            # also counts reasoning tokens, so a small one yields an empty context.
             max_tokens=None,
             base_url=settings.contextualize_llm_binding_host,
             api_key=settings.contextualize_llm_binding_api_key,
