@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from typing import Any, Callable, final, Optional
 from hybrid_rag.core.concurrency import limit_async_func_call
-from hybrid_rag.storage.neo4j import Neo4JStorage, Neo4jVectorStorage
+from hybrid_rag.storage.neo4j import Neo4jBM25Search, Neo4JStorage, Neo4jVectorStorage
 from hybrid_rag.storage.postgres import PGKVStorage
 from hybrid_rag.core.base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage, StoragesStatus
 from hybrid_rag.retrieval.types import QueryParam
@@ -212,6 +212,8 @@ class RetrievalRAG:
                 if storage:
                     # logger.debug(f"Initializing storage: {storage}")
                     await storage.initialize()
+            # BM25 reads the chunk nodes chunks_vdb writes: same (initialized) workspace.
+            self.chunks_bm25 = Neo4jBM25Search(workspace=self.chunks_vdb.workspace)
 
             self._storages_status = StoragesStatus.INITIALIZED
             logger.debug("All storage types initialized")
@@ -316,6 +318,7 @@ class RetrievalRAG:
                 global_config,
                 hashing_kv=self.llm_response_cache,
                 chunks_vdb=self.chunks_vdb,
+                chunks_bm25=self.chunks_bm25,
             )
 
             await self._query_done()

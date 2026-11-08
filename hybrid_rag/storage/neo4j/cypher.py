@@ -44,10 +44,6 @@ ENTITY_FULLTEXT_INDEX = "hybrid_rag_entity_id_fulltext"  # entity-name search (g
 VDB_ID, VDB_CONTENT = "vdb_id", "vdb_content"
 HIDDEN = (EMBEDDING, VDB_ID, VDB_CONTENT)
 
-# RRF constant, as in the guide and the old SQL.
-RRF_K = 60.0
-
-
 def hidden_projection(var: str) -> str:
     """``n {.*, hidden: null, ...}``: all properties of ``var`` except the search ones."""
     return f"{var} {{.*, " + ", ".join(f"`{key}`: null" for key in ("workspace", *HIDDEN)) + "}"
@@ -217,45 +213,20 @@ RELATION_SEARCH = _vector_search("r", f"()-[r:{EDGE_TYPE}]->()", RELATION_VECTOR
     ORDER BY score DESC
 """
 
-# One arm of the chunk search: its top ``$candidates``, ranked, each scored
-# ``weight / (RRF_K + rank)`` (rank from 1; ties broken by id so ranks are reproducible).
-_RANKED_ARM = """
-        WITH c, score ORDER BY score DESC, c.id
-        WITH collect(c) AS hits
-        UNWIND range(0, size(hits) - 1) AS i
-        RETURN hits[i] AS c, {weight} / ({rrf_k} + i + 1) AS rrf"""
-_CHUNK_VECTOR_ARM = f"""
-        MATCH (c:{CHUNK_LABEL})
-        SEARCH c IN (
-            VECTOR INDEX {CHUNK_VECTOR_INDEX} FOR $embedding
-            WHERE c.workspace = $workspace
-            LIMIT $candidates
-        ) SCORE AS score
-        WITH c, score WHERE score > $min_score
-""" + _RANKED_ARM.format(weight="$w_semantic", rrf_k=RRF_K)
-_CHUNK_BM25_ARM = f"""
-        MATCH (c:{CHUNK_LABEL})
-        SEARCH c IN (
-            FULLTEXT INDEX {CHUNK_BM25_INDEX} FOR $bm25_query
-            LIMIT $candidates
-        ) SCORE AS score
-""" + _RANKED_ARM.format(weight="$w_keyword", rrf_k=RRF_K)
-
-
-def chunk_hybrid_search(with_bm25: bool) -> str:
-    """Vector and BM25 arms fused with weighted RRF (the hybrid-search guide's query).
-
-    ``with_bm25=False`` when the query has no word left after stopword removal: an empty
-    Lucene clause would fail to parse, and the old ``||| ''`` matched nothing anyway.
-    """
-    arms = _CHUNK_VECTOR_ARM + ("        UNION ALL" + _CHUNK_BM25_ARM if with_bm25 else "")
-    return f"""
-        CYPHER 25
-        CALL () {{{arms}
-        }}
-        WITH c, sum(rrf) AS rrf_score
-        ORDER BY rrf_score DESC, c.id
-        LIMIT $candidates
-        RETURN c.id AS id, c.content AS content, c.file_path AS file_path,
-               c.created_at AS created_at, rrf_score
-    """
+# A chunk hit, as both chunk searches return it: best first, ties broken by id so
+# ranks (and the RRF built on them) are reproducible.
+_CHUNK_HIT = """
+    RETURN c.id AS id, c.content AS content, c.file_path AS file_path,
+           c.created_at AS created_at, score
+    ORDER BY score DESC, c.id
+"""
+CHUNK_SEARCH = _vector_search("c", f"(c:{CHUNK_LABEL})", CHUNK_VECTOR_INDEX) + _CHUNK_HIT
+# BM25 over ``content_cleaned``; ``$bm25_query`` comes from :func:`bm25_query`.
+CHUNK_BM25_SEARCH = f"""
+    CYPHER 25
+    MATCH (c:{CHUNK_LABEL})
+    SEARCH c IN (
+        FULLTEXT INDEX {CHUNK_BM25_INDEX} FOR $bm25_query
+        LIMIT $top_k
+    ) SCORE AS score
+""" + _CHUNK_HIT

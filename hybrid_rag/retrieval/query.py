@@ -27,9 +27,8 @@ from hybrid_rag.retrieval.context import (
     _build_context_str,
     _merge_all_chunks,
 )
-from hybrid_rag.retrieval.search import (
-    _perform_kg_search,
-)
+from hybrid_rag.retrieval.search import hybrid_search
+from hybrid_rag.storage.neo4j import Neo4jBM25Search
 import logging
 
 logger = logging.getLogger(__name__)
@@ -45,6 +44,7 @@ async def kg_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     chunks_vdb: BaseVectorStorage = None,
+    chunks_bm25: Neo4jBM25Search | None = None,
 ) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -59,6 +59,7 @@ async def kg_query(
         global_config: Global configuration
         hashing_kv: Cache storage
         chunks_vdb: Document chunks vector database
+        chunks_bm25: Document chunks BM25 search
 
     Returns:
         QueryResult | None: ``context`` holds the assembled context string and
@@ -107,6 +108,7 @@ async def kg_query(
         text_chunks_db,
         query_param,
         chunks_vdb,
+        chunks_bm25,
     )
 
     if context_result is None:
@@ -207,6 +209,7 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
+    chunks_bm25: Neo4jBM25Search | None = None,
 ) -> QueryResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -220,7 +223,7 @@ async def _build_query_context(
         return None
 
     # Stage 1: Pure search
-    search_result = await _perform_kg_search(
+    search_result = await hybrid_search(
         query,
         ll_keywords,
         hl_keywords,
@@ -230,6 +233,7 @@ async def _build_query_context(
         text_chunks_db,
         query_param,
         chunks_vdb,
+        chunks_bm25,
     )
 
     if not search_result["final_entities"] and not search_result["final_relations"]:

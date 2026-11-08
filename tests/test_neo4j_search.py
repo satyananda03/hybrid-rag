@@ -1,10 +1,11 @@
 """Pure logic of the Neo4j vector/BM25 storage: no database, network or model."""
 
+import asyncio
 import datetime
 
 import pytest
 
-from hybrid_rag.storage.neo4j import cypher
+from hybrid_rag.storage.neo4j import bm25, cypher
 from hybrid_rag.storage.neo4j.vector import Neo4jVectorStorage, _PendingVectorDoc, _sorted_pair
 
 
@@ -23,9 +24,13 @@ def test_bm25_query_requires_workspace_and_matches_any_word():
     assert key.isalnum() and key != cypher.ws_key("ws.v1-b")
 
 
-def test_hybrid_search_drops_bm25_arm_for_empty_query():
-    assert "FULLTEXT INDEX" in cypher.chunk_hybrid_search(with_bm25=True)
-    assert "FULLTEXT INDEX" not in cypher.chunk_hybrid_search(with_bm25=False)
+def test_bm25_skips_the_database_for_a_stopword_only_query(monkeypatch):
+    async def no_db(*a, **kw):
+        raise AssertionError("an empty Lucene clause must never reach Neo4j")
+
+    monkeypatch.setattr(bm25, "read", no_db)
+    monkeypatch.setattr(bm25, "get_stopwords", lambda: frozenset({"yang", "dan"}))
+    assert asyncio.run(bm25.Neo4jBM25Search("w").query("yang, dan?", top_k=5)) == []
 
 
 def test_relation_hits_have_sorted_endpoints():

@@ -1,10 +1,10 @@
-"""``Neo4jVectorStorage`` — embeddings and BM25 text in Neo4j, next to the graph.
+"""``Neo4jVectorStorage`` — embeddings (and the chunks' BM25 text) in Neo4j, next to the graph.
 
 Chunk vectors live on ``(:HybridRagChunk)`` nodes, entity vectors on the graph's
 ``(:HybridRagEntity)`` nodes and relation vectors on its ``[:DIRECTED]`` edges (layout
 and queries: :mod:`hybrid_rag.storage.neo4j.cypher`). :meth:`Neo4jVectorStorage.query`
-runs, for chunks, a vector search and a BM25 search fused with RRF; for entities and
-relations a vector search.
+is the vector (dense) search; BM25 over the same chunk nodes is
+:class:`hybrid_rag.storage.neo4j.bm25.Neo4jBM25Search`.
 
 Writes are buffered: ``upsert``/``delete`` queue work that ``index_done_callback()``
 embeds and flushes in batches. An entity/relation vector can only be written once its
@@ -30,7 +30,7 @@ from hybrid_rag.core.constants import NameSpace, is_namespace
 from hybrid_rag.core.utils import validate_workspace
 from hybrid_rag.storage.neo4j import cypher
 from hybrid_rag.storage.neo4j.bm25 import preprocess_indonesian_fast
-from hybrid_rag.storage.neo4j.connection import get_neo4j_driver
+from hybrid_rag.storage.neo4j.connection import get_neo4j_driver, read
 from hybrid_rag.storage.shared import get_data_init_lock, get_namespace_lock
 import logging
 
@@ -110,7 +110,7 @@ class _Target:
     upsert: str
     delete: str
     by_id: str
-    search: str | None  # None: chunks, whose search is cypher.chunk_hybrid_search()
+    search: str
     hit: Callable[[dict[str, Any]], dict[str, Any]]
     graph_owned: bool  # the vector attaches to an element the graph storage creates
 
@@ -118,7 +118,7 @@ class _Target:
 _TARGETS = {
     NameSpace.VECTOR_STORE_CHUNKS: _Target(
         _chunk_row, cypher.CHUNK_UPSERT, cypher.CHUNK_DELETE, cypher.CHUNK_BY_ID,
-        None, dict, graph_owned=False,
+        cypher.CHUNK_SEARCH, dict, graph_owned=False,
     ),
     NameSpace.VECTOR_STORE_ENTITIES: _Target(
         _entity_row, cypher.ENTITY_UPSERT, cypher.ENTITY_DELETE, cypher.ENTITY_BY_ID,
@@ -253,11 +253,7 @@ class Neo4jVectorStorage(BaseVectorStorage):
     async def _read(self, query: str, **params) -> list[dict[str, Any]]:
         """Run a read query with ``$workspace`` bound to this instance's workspace."""
         params.setdefault("workspace", self.workspace)
-        async with self._driver.session(
-            database=settings.neo4j_database or None, default_access_mode="READ"
-        ) as session:
-            result = await session.run(query, params)
-            return [record.data() async for record in result]
+        return await read(query, **params)
 
     async def _write(self, query: str, **params) -> list[dict[str, Any]]:
         """Run a write query in a managed (retried-by-driver) transaction."""
@@ -573,7 +569,7 @@ class Neo4jVectorStorage(BaseVectorStorage):
 
     # ── Search ─────────────────────────────────────────────────────────────
     async def query(self, query: str, top_k: int, query_embedding: list[float] = None) -> list[dict[str, Any]]:
-        """Nearest rows for ``query``; the chunks namespace fuses vector and BM25 with RRF."""
+        """The ``top_k`` stored rows closest to ``query`` by cosine, best first."""
         if query_embedding is None:
             query_embedding = (await self.embedding_func([query], context="query"))[0]
         params = {
@@ -581,18 +577,7 @@ class Neo4jVectorStorage(BaseVectorStorage):
             # cos > threshold, in Neo4j's (1 + cos) / 2 score.
             "min_score": cypher.score_floor(1 - self.cosine_better_than_threshold),
         }
-        if self._target.search is None:
-            query_cleaned = preprocess_indonesian_fast(query)
-            rows = await self._read(
-                cypher.chunk_hybrid_search(with_bm25=bool(query_cleaned)),
-                candidates=settings.hybrid_search_chunk_candidates,
-                w_semantic=settings.hybrid_search_w_semantic,
-                w_keyword=settings.hybrid_search_w_keyword,
-                bm25_query=cypher.bm25_query(self.workspace, query_cleaned),
-                **params,
-            )
-        else:
-            rows = await self._read(self._target.search, top_k=top_k, **params)
+        rows = await self._read(self._target.search, top_k=top_k, **params)
         return [self._target.hit(row) for row in rows]
 
     async def nearest_entities(
