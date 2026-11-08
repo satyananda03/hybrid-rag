@@ -2,7 +2,7 @@
 
 ``TABLES`` holds the DDL, ``SQL_TEMPLATES`` every parameterized statement, and
 ``NAMESPACE_TABLE_MAP`` resolves a storage namespace to its table. Vector and BM25
-search live in Neo4j (``storage/neo4j/cypher.py``).
+search live in Neo4j (``storage/neo4j/``).
 """
 
 

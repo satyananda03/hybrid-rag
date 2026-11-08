@@ -3,7 +3,7 @@
 Three searches, run concurrently:
 
 * dense  — chunk vectors           (``Neo4jVectorStorage.query``)
-* sparse — chunk BM25              (``Neo4jBM25Search.query``)
+* sparse — chunk BM25              (``Neo4jBM25Storage.query``)
 * graph  — entities and relations  (:class:`.graph.GraphSearch`)
 
 Dense and sparse return the same chunks and are fused with weighted RRF
@@ -21,7 +21,7 @@ from hybrid_rag.core.base import BaseGraphStorage, BaseKVStorage, BaseVectorStor
 from hybrid_rag.retrieval.search.fusion import weighted_rrf
 from hybrid_rag.retrieval.search.graph import GraphSearch
 from hybrid_rag.retrieval.types import QueryParam
-from hybrid_rag.storage.neo4j import Neo4jBM25Search
+from hybrid_rag.storage.neo4j import Neo4jBM25Storage
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ async def hybrid_search(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage | None = None,
-    chunks_bm25: Neo4jBM25Search | None = None,
+    chunks_bm25: Neo4jBM25Storage | None = None,
 ) -> dict[str, Any]:
     """Raw entities, relations and chunks for the query; chunk search runs when ``chunks_vdb`` is given."""
     pick_method = text_chunks_db.global_config.get("kg_chunk_pick_method", settings.kg_chunk_pick_method)
@@ -92,7 +92,7 @@ async def _search_chunks(
     query: str,
     query_embedding: Any,
     chunks_vdb: BaseVectorStorage | None,
-    chunks_bm25: Neo4jBM25Search | None,
+    chunks_bm25: Neo4jBM25Storage | None,
 ) -> list[dict]:
     """Dense and sparse chunk search fused with weighted RRF; ``[]`` if a search fails."""
     if chunks_vdb is None:

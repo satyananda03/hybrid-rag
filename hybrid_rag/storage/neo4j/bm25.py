@@ -2,7 +2,7 @@
 
 The same :func:`preprocess_indonesian_fast` runs on the stored chunk text (written by
 ``Neo4jVectorStorage`` as ``content_cleaned``) and on the query, so both sides share one
-vocabulary; the index itself only splits on whitespace (``cypher.SCHEMA``).
+vocabulary; the index itself only splits on whitespace (``SCHEMA``).
 """
 
 import logging
@@ -10,8 +10,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from hybrid_rag.storage.neo4j import cypher
 from hybrid_rag.storage.neo4j.connection import read
+from hybrid_rag.storage.neo4j.schema import CHUNK_BM25_INDEX, CHUNK_HIT, CHUNK_LABEL, ws_key
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +44,29 @@ def preprocess_indonesian_fast(text: str) -> str:
     return " ".join(w for w in cleaned_text.split() if w not in sw)
 
 
+def bm25_query(workspace: str, cleaned_text: str) -> str:
+    """Lucene query: the workspace term is required, any of the words may match.
+
+    ``cleaned_text`` comes from ``preprocess_indonesian_fast``: lowercase ``\\w+`` words
+    only, so nothing in it is Lucene syntax. The required ``ws_key`` term adds the same
+    score to every chunk of the workspace, so it does not change their order.
+    """
+    return f"+ws_key:{ws_key(workspace)} +content_cleaned:({cleaned_text})"
+
+
+# BM25 over ``content_cleaned``; ``$bm25_query`` comes from :func:`bm25_query`.
+CHUNK_BM25_SEARCH = f"""
+    CYPHER 25
+    MATCH (c:{CHUNK_LABEL})
+    SEARCH c IN (
+        FULLTEXT INDEX {CHUNK_BM25_INDEX} FOR $bm25_query
+        LIMIT $top_k
+    ) SCORE AS score
+""" + CHUNK_HIT
+
+
 @dataclass(frozen=True)
-class Neo4jBM25Search:
+class Neo4jBM25Storage:
     """BM25 over one workspace's chunk nodes.
 
     Read-only: the chunk node, ``content_cleaned`` included, is written by
@@ -60,7 +81,7 @@ class Neo4jBM25Search:
         if not cleaned:  # only stopwords: nothing to match, and "()" would not parse
             return []
         return await read(
-            cypher.CHUNK_BM25_SEARCH,
-            bm25_query=cypher.bm25_query(self.workspace, cleaned),
+            CHUNK_BM25_SEARCH,
+            bm25_query=bm25_query(self.workspace, cleaned),
             top_k=top_k,
         )

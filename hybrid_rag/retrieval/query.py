@@ -28,7 +28,7 @@ from hybrid_rag.retrieval.context import (
     _merge_all_chunks,
 )
 from hybrid_rag.retrieval.search import hybrid_search
-from hybrid_rag.storage.neo4j import Neo4jBM25Search
+from hybrid_rag.storage.neo4j import Neo4jBM25Storage
 import logging
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ async def kg_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     chunks_vdb: BaseVectorStorage = None,
-    chunks_bm25: Neo4jBM25Search | None = None,
+    chunks_bm25: Neo4jBM25Storage | None = None,
 ) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -209,7 +209,7 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
-    chunks_bm25: Neo4jBM25Search | None = None,
+    chunks_bm25: Neo4jBM25Storage | None = None,
 ) -> QueryResult | None:
     """
     Main query context building function using the new 4-stage architecture:

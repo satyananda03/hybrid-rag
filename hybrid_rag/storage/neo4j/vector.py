@@ -2,9 +2,9 @@
 
 Chunk vectors live on ``(:HybridRagChunk)`` nodes, entity vectors on the graph's
 ``(:HybridRagEntity)`` nodes and relation vectors on its ``[:DIRECTED]`` edges (layout
-and queries: :mod:`hybrid_rag.storage.neo4j.cypher`). :meth:`Neo4jVectorStorage.query`
+shared names: :mod:`hybrid_rag.storage.neo4j.schema`). :meth:`Neo4jVectorStorage.query`
 is the vector (dense) search; BM25 over the same chunk nodes is
-:class:`hybrid_rag.storage.neo4j.bm25.Neo4jBM25Search`.
+:class:`hybrid_rag.storage.neo4j.bm25.Neo4jBM25Storage`.
 
 Writes are buffered: ``upsert``/``delete`` queue work that ``index_done_callback()``
 embeds and flushes in batches. An entity/relation vector can only be written once its
@@ -28,7 +28,10 @@ from hybrid_rag.config import settings
 from hybrid_rag.core.base import BaseVectorStorage
 from hybrid_rag.core.constants import NameSpace, is_namespace
 from hybrid_rag.core.utils import validate_workspace
-from hybrid_rag.storage.neo4j import cypher
+from hybrid_rag.storage.neo4j.schema import (
+    CHUNK_HIT, CHUNK_LABEL, CHUNK_VECTOR_INDEX, EDGE_TYPE, EMBEDDING, ENTITY_VECTOR_INDEX, LABEL,
+    RELATION_VECTOR_INDEX, SUFFIX, VDB_CONTENT, VDB_ID, ws_key,
+)
 from hybrid_rag.storage.neo4j.bm25 import preprocess_indonesian_fast
 from hybrid_rag.storage.neo4j.connection import get_neo4j_driver, read
 from hybrid_rag.storage.shared import get_data_init_lock, get_namespace_lock
@@ -42,6 +45,117 @@ _WRITE_BATCH = 200
 # ponytail: fixed TTL; a vector whose document's graph write comes later than this is
 # dropped (warned) — tie it to the document's merge if that ever happens.
 _UNMATCHED_TTL = datetime.timedelta(hours=1)
+
+
+def score_floor(max_distance: float) -> float:
+    """The Neo4j score above which the cosine distance is below ``max_distance``."""
+    return 1 - max_distance / 2
+
+
+def distance(score: float) -> float:
+    """Cosine distance (``1 - cos``) of a Neo4j cosine score."""
+    return 2 * (1 - score)
+
+
+# ── Cypher: writes ─────────────────────────────────────────────────────────
+# Every upsert returns the ids it wrote. Chunks are created here; entity and relation
+# vectors attach to a graph element that the graph storage owns, so a row whose
+# element does not exist (yet) writes nothing and is not returned.
+CHUNK_UPSERT = f"""
+    UNWIND $rows AS row
+    MERGE (c:{CHUNK_LABEL} {{workspace: $workspace, id: row.id}})
+    ON CREATE SET c.created_at = row.created_at
+    SET c += row.props, c.`{EMBEDDING}` = row.vector
+    RETURN row.id AS id
+"""
+ENTITY_UPSERT = f"""
+    UNWIND $rows AS row
+    MATCH (n:{LABEL} {{workspace: $workspace, entity_id: row.entity_name}})
+    SET n.{VDB_ID} = row.id, n.{VDB_CONTENT} = row.content, n.`{EMBEDDING}` = row.vector
+    RETURN row.id AS id
+"""
+RELATION_UPSERT = f"""
+    UNWIND $rows AS row
+    MATCH (:{LABEL} {{workspace: $workspace, entity_id: row.src_id}})
+          -[r:{EDGE_TYPE}]-(:{LABEL} {{workspace: $workspace, entity_id: row.tgt_id}})
+    SET r.{VDB_ID} = row.id, r.{VDB_CONTENT} = row.content, r.`{EMBEDDING}` = row.vector,
+        r.workspace = $workspace
+    RETURN DISTINCT row.id AS id
+"""
+
+CHUNK_DELETE = f"""
+    UNWIND $ids AS id
+    MATCH (c:{CHUNK_LABEL} {{workspace: $workspace, id: id}})
+    DETACH DELETE c
+"""
+# The node or edge itself belongs to the graph storage: only its vector goes.
+ENTITY_DELETE = f"""
+    UNWIND $ids AS id
+    MATCH (n:{LABEL} {{workspace: $workspace, {VDB_ID}: id}})
+    REMOVE n.{VDB_ID}, n.{VDB_CONTENT}, n.`{EMBEDDING}`
+"""
+RELATION_DELETE = f"""
+    UNWIND $ids AS id
+    MATCH ()-[r:{EDGE_TYPE} {{workspace: $workspace, {VDB_ID}: id}}]->()
+    REMOVE r.{VDB_ID}, r.{VDB_CONTENT}, r.`{EMBEDDING}`
+"""
+
+
+# ── Cypher: reads by id ────────────────────────────────────────────────────
+# ``record``: the stored row without its vector; ``vector``: id, content and vector.
+CHUNK_BY_ID = f"""
+    UNWIND $ids AS id
+    MATCH (c:{CHUNK_LABEL} {{workspace: $workspace, id: id}})
+    RETURN c.id AS id, c.content AS content, c.`{EMBEDDING}` AS vector,
+           c {{.full_doc_id, .chunk_order_index, .tokens, .file_path, .created_at}} AS fields
+"""
+ENTITY_BY_ID = f"""
+    UNWIND $ids AS id
+    MATCH (n:{LABEL} {{workspace: $workspace, {VDB_ID}: id}})
+    RETURN n.{VDB_ID} AS id, n.{VDB_CONTENT} AS content, n.`{EMBEDDING}` AS vector,
+           {{entity_name: n.entity_id, file_path: n.file_path, created_at: n.created_at}} AS fields
+"""
+RELATION_BY_ID = f"""
+    UNWIND $ids AS id
+    MATCH (a)-[r:{EDGE_TYPE} {{workspace: $workspace, {VDB_ID}: id}}]->(b)
+    RETURN r.{VDB_ID} AS id, r.{VDB_CONTENT} AS content, r.`{EMBEDDING}` AS vector,
+           {{source_id: a.entity_id, target_id: b.entity_id, file_path: r.file_path,
+             created_at: r.created_at}} AS fields
+"""
+
+CHUNK_IDS_OF_DOC = f"""
+    MATCH (c:{CHUNK_LABEL} {{workspace: $workspace, full_doc_id: $doc_id}})
+    RETURN c.id AS id
+"""
+
+
+# ── Cypher: search ─────────────────────────────────────────────────────────
+def _vector_search(binding: str, pattern: str, index: str) -> str:
+    """Top ``$top_k`` of the workspace by cosine, above ``$min_score``, best first."""
+    return f"""
+        CYPHER 25
+        MATCH {pattern}
+        SEARCH {binding} IN (
+            VECTOR INDEX {index} FOR $embedding
+            WHERE {binding}.workspace = $workspace
+            LIMIT $top_k
+        ) SCORE AS score
+        WITH {binding}, score WHERE score > $min_score
+    """
+
+
+ENTITY_SEARCH = _vector_search("n", f"(n:{LABEL})", ENTITY_VECTOR_INDEX) + """
+    RETURN n.entity_id AS entity_name, n.created_at AS created_at, score
+    ORDER BY score DESC
+"""
+# Directed pattern: each edge once (an undirected one would yield it twice).
+RELATION_SEARCH = _vector_search("r", f"()-[r:{EDGE_TYPE}]->()", RELATION_VECTOR_INDEX) + """
+    RETURN startNode(r).entity_id AS src_id, endNode(r).entity_id AS tgt_id,
+           r.created_at AS created_at, score
+    ORDER BY score DESC
+"""
+
+CHUNK_SEARCH = _vector_search("c", f"(c:{CHUNK_LABEL})", CHUNK_VECTOR_INDEX) + CHUNK_HIT
 
 
 def _as_float32_vector(value: Any) -> np.ndarray | None:
@@ -79,7 +193,7 @@ def _chunk_row(item: dict[str, Any], workspace: str) -> dict[str, Any]:
             # BM25 runs on the contextualized chunk text ("{context}. {child_content}"),
             # stopwords stripped (Sastrawi).
             "content_cleaned": preprocess_indonesian_fast(item["content"]),
-            "ws_key": cypher.ws_key(workspace),
+            "ws_key": ws_key(workspace),
             "updated_at": created,
         },
     }
@@ -117,18 +231,18 @@ class _Target:
 
 _TARGETS = {
     NameSpace.VECTOR_STORE_CHUNKS: _Target(
-        _chunk_row, cypher.CHUNK_UPSERT, cypher.CHUNK_DELETE, cypher.CHUNK_BY_ID,
-        cypher.CHUNK_SEARCH, dict, graph_owned=False,
+        _chunk_row, CHUNK_UPSERT, CHUNK_DELETE, CHUNK_BY_ID,
+        CHUNK_SEARCH, dict, graph_owned=False,
     ),
     NameSpace.VECTOR_STORE_ENTITIES: _Target(
-        _entity_row, cypher.ENTITY_UPSERT, cypher.ENTITY_DELETE, cypher.ENTITY_BY_ID,
-        cypher.ENTITY_SEARCH,
+        _entity_row, ENTITY_UPSERT, ENTITY_DELETE, ENTITY_BY_ID,
+        ENTITY_SEARCH,
         lambda r: {"entity_name": r["entity_name"], "created_at": r["created_at"]},
         graph_owned=True,
     ),
     NameSpace.VECTOR_STORE_RELATIONSHIPS: _Target(
-        _relation_row, cypher.RELATION_UPSERT, cypher.RELATION_DELETE, cypher.RELATION_BY_ID,
-        cypher.RELATION_SEARCH, _sorted_pair, graph_owned=True,
+        _relation_row, RELATION_UPSERT, RELATION_DELETE, RELATION_BY_ID,
+        RELATION_SEARCH, _sorted_pair, graph_owned=True,
     ),
 }
 
@@ -159,12 +273,12 @@ class Neo4jVectorStorage(BaseVectorStorage):
         self._target = _target(self.namespace)
 
         # The vector property and index are named after the configured model
-        # (cypher.SUFFIX); vectors of another model must never be written into them.
+        # (SUFFIX); vectors of another model must never be written into them.
         self.model_suffix = self._generate_collection_suffix()
-        if (self.model_suffix or "default") != cypher.SUFFIX:
+        if (self.model_suffix or "default") != SUFFIX:
             raise ValueError(
                 f"embedding_func model {self.model_suffix!r} does not match "
-                f"EMBEDDING_MODEL/EMBEDDING_DIM ({cypher.SUFFIX!r})"
+                f"EMBEDDING_MODEL/EMBEDDING_DIM ({SUFFIX!r})"
             )
 
         # Pending buffers: upsert() and delete() queue work here until
@@ -575,7 +689,7 @@ class Neo4jVectorStorage(BaseVectorStorage):
         params = {
             "embedding": _as_list(query_embedding),
             # cos > threshold, in Neo4j's (1 + cos) / 2 score.
-            "min_score": cypher.score_floor(1 - self.cosine_better_than_threshold),
+            "min_score": score_floor(1 - self.cosine_better_than_threshold),
         }
         rows = await self._read(self._target.search, top_k=top_k, **params)
         return [self._target.hit(row) for row in rows]
@@ -591,12 +705,12 @@ class Neo4jVectorStorage(BaseVectorStorage):
 
         async def one(embedding) -> list[tuple[str, float]]:
             rows = await self._read(
-                cypher.ENTITY_SEARCH,
+                ENTITY_SEARCH,
                 embedding=_as_list(embedding),
                 top_k=top_k,
-                min_score=cypher.score_floor(max_distance),
+                min_score=score_floor(max_distance),
             )
-            return [(r["entity_name"], cypher.distance(r["score"])) for r in rows]
+            return [(r["entity_name"], distance(r["score"])) for r in rows]
 
         return list(await asyncio.gather(*(one(e) for e in embeddings)))
 
@@ -613,7 +727,7 @@ class Neo4jVectorStorage(BaseVectorStorage):
                 f"get_chunk_ids_by_doc_id is only valid for the chunk vector "
                 f"namespace, not {self.namespace!r}"
             )
-        rows = await self._read(cypher.CHUNK_IDS_OF_DOC, doc_id=doc_id)
+        rows = await self._read(CHUNK_IDS_OF_DOC, doc_id=doc_id)
         return [str(row["id"]) for row in rows if row.get("id")]
 
     def _buffered(self, doc_id: str, pending: _PendingVectorDoc) -> dict[str, Any]:

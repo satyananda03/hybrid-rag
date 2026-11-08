@@ -11,18 +11,23 @@ from hybrid_rag.config import settings
 from hybrid_rag.core.base import BaseGraphStorage
 from hybrid_rag.core.types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
 from hybrid_rag.core.utils import validate_workspace
-from hybrid_rag.storage.neo4j import cypher
-from hybrid_rag.storage.neo4j.cypher import ENTITY_FULLTEXT_INDEX as FULLTEXT_INDEX, HIDDEN, LABEL, hidden_projection
+from hybrid_rag.storage.neo4j.schema import ENTITY_FULLTEXT_INDEX as FULLTEXT_INDEX, HIDDEN, LABEL, SCHEMA
 from hybrid_rag.storage.neo4j.connection import get_neo4j_driver
 from hybrid_rag.storage.shared import get_data_init_lock
 
 logger = logging.getLogger(__name__)
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
+
+def hidden_projection(var: str) -> str:
+    """``n {.*, hidden: null, ...}``: all properties of ``var`` except the search ones."""
+    return f"{var} {{.*, " + ", ".join(f"`{key}`: null" for key in ("workspace", *HIDDEN)) + "}"
+
+
 WS_NODE = f"(n:{LABEL} {{workspace: $workspace}}) WHERE n.entity_id IS NOT NULL"
 DEFAULT_EDGE = {"weight": 1.0, "source_id": None, "description": None, "keywords": None}
 # Node / edge properties without the isolation key and the vector-search fields
-# (cypher.HIDDEN): those never leave this module, and are never sent at all by the
+# (schema.HIDDEN): those never leave this module, and are never sent at all by the
 # reads that project them away.
 NODE = hidden_projection("n")
 EDGE = hidden_projection("r")
@@ -55,12 +60,12 @@ WRITE_RETRY = retry(
 )
 
 async def create_schema() -> None:
-    """Constraints and graph + search indexes (:data:`cypher.SCHEMA`), global rather than per workspace.
+    """Constraints and graph + search indexes (:data:`SCHEMA`), global rather than per workspace.
 
     Called by :mod:`hybrid_rag.db_init` only; the runtime runs no DDL. Idempotent.
     """
     async with get_neo4j_driver().session(database=settings.neo4j_database or None) as session:
-        for statement in cypher.SCHEMA:
+        for statement in SCHEMA:
             await (await session.run(statement)).consume()
 
 
@@ -285,7 +290,7 @@ class Neo4JStorage(BaseGraphStorage):
             f"MATCH (source:{LABEL} {{workspace: $workspace, entity_id: row.src}}) "
             f"WITH source, row "
             f"MATCH (target:{LABEL} {{workspace: $workspace, entity_id: row.tgt}}) "
-            # r.workspace: the relation vector index filters on it (cypher.py).
+            # r.workspace: the relation vector index filters on it (schema.py).
             "MERGE (source)-[r:DIRECTED]-(target) SET r += row.props, r.workspace = $workspace",
             edges=[{"src": src, "tgt": tgt, "props": data} for src, tgt, data in edges],
         )
