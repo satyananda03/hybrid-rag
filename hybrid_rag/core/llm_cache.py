@@ -25,6 +25,9 @@ Every key the chain reads or writes is appended to the ``CACHE_KEYS`` list, so
 callers can record them on the chunk (``llm_cache_list``) and the delete path
 can clean them up. Skipping that leaves cache rows behind after a document is
 deleted, so pass the collector wherever a ``chunk_id`` exists.
+
+``reask_invalid=True`` gives a structured chain one corrective retry when the
+reply breaks its schema (:func:`_ask`).
 """
 
 
@@ -33,13 +36,31 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from langchain_core.exceptions import OutputParserException
+from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
+from openai import LengthFinishReasonError
 from pydantic import BaseModel, ValidationError
 
 from hybrid_rag.core.utils import compute_args_hash
 
 logger = logging.getLogger(__name__)
+
+# A model reply that breaks its output schema as a whole (invalid JSON, a missing
+# or mistyped field, or JSON cut off at max_tokens because the model ran on).
+# Asking again can succeed; infrastructure errors are not in here.
+INVALID_OUTPUT_ERRORS = (ValidationError, OutputParserException, LengthFinishReasonError)
+
+# Sent after the original messages when a reply broke the schema. Changing the
+# request is the point: the same request gets the same reply back, from the
+# LLM proxy's response cache or from the model itself at temperature 0.
+REASK_PROMPT = (
+    "Your previous reply was rejected because it does not match the required output schema:\n"
+    "{error}\n\n"
+    "Answer the same request again. Return every required field, each at the nesting level "
+    "the schema defines, and nothing else."
+)
 
 
 def generate_cache_key(mode: str, cache_type: str, hash_value: str) -> str:
@@ -192,6 +213,24 @@ def _cache_enabled(kv: Any, mode: str) -> bool:
     return bool(config.get(key))
 
 
+async def _ask(
+    llm: Runnable, messages: list[BaseMessage], config: RunnableConfig | None, reask_invalid: bool
+) -> Any:
+    """``llm.ainvoke(messages)``; with ``reask_invalid``, once more when the reply breaks its schema.
+
+    The retry carries the validation error (:data:`REASK_PROMPT`), so it is a new
+    request the model can correct itself on. A second invalid reply propagates.
+    """
+    try:
+        return await llm.ainvoke(messages, config)
+    except INVALID_OUTPUT_ERRORS as e:
+        if not reask_invalid:
+            raise
+        logger.warning(f"invalid structured output, asking again with the error: {str(e)[:500]}")
+        feedback = HumanMessage(content=REASK_PROMPT.format(error=str(e)[:2000]))
+        return await llm.ainvoke([*messages, feedback], config)
+
+
 def cached_chain(
     prompt: ChatPromptTemplate,
     llm: Runnable,
@@ -200,6 +239,7 @@ def cached_chain(
     model_id: str,
     output_model: type[BaseModel] | None = None,
     mode: str = "default",
+    reask_invalid: bool = False,
 ) -> Runnable:
     """Wrap ``prompt | llm`` with a cache lookup.
 
@@ -216,6 +256,9 @@ def cached_chain(
             revalidated against it, so an entry written by an older contract is
             discarded rather than trusted. Leave as None for a text chain.
         mode: Default cache mode; ``CACHE_MODE`` overrides it per call.
+        reask_invalid: Retry once, with the validation error, when the reply
+            breaks ``output_model`` (see :func:`_ask`). Only the valid reply is
+            cached, under the original request's key.
     """
     schema_key = _output_fingerprint(output_model)
     default_mode = mode
@@ -226,7 +269,7 @@ def cached_chain(
         messages = prompt.format_messages(**inputs)
 
         if kv is None:
-            return await llm.ainvoke(messages, config)
+            return await _ask(llm, messages, config, reask_invalid)
 
         call_mode = configurable.get(CACHE_MODE) or default_mode
         prompt_text = "\n".join(str(message.content) for message in messages)
@@ -262,7 +305,7 @@ def cached_chain(
                     collector.append(cache_key)
                 return hit
 
-        result = await llm.ainvoke(messages, config)
+        result = await _ask(llm, messages, config, reask_invalid)
         if result is None:
             return None
 

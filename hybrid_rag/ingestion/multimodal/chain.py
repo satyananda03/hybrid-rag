@@ -183,7 +183,7 @@ def _vlm() -> Runnable:
 
 @cache
 def _vlm_image() -> Runnable:
-    return _vlm().with_structured_output(ImageAnalysis)
+    return _vlm().with_structured_output(ImageAnalysis, strict=True)
 
 
 @cache
@@ -195,7 +195,7 @@ def _extract_llm_table() -> Runnable:
         api_key=settings.extract_llm_binding_api_key,
         timeout=settings.extract_llm_timeout,
         max_tokens=TABLE_MAX_TOKENS,
-    ).with_structured_output(TableAnalysis)
+    ).with_structured_output(TableAnalysis, strict=True)
 
 
 @cache
@@ -207,17 +207,18 @@ def _extract_llm_equation() -> Runnable:
         api_key=settings.extract_llm_binding_api_key,
         timeout=settings.extract_llm_timeout,
         max_tokens=settings.extract_llm_max_tokens,
-    ).with_structured_output(EquationAnalysis)
+    ).with_structured_output(EquationAnalysis, strict=True)
 
 @cache
 def slide_transcription_chain() -> Runnable:
     """Vision chain for one whole slide: Markdown text plus each grid as a structured table."""
     return cached_chain(
         _chat_prompt("slide_transcription", with_image=True),
-        _vlm().with_structured_output(SlideTranscription),
+        _vlm().with_structured_output(SlideTranscription, strict=True),
         cache_type="vlm",
         output_model=SlideTranscription,
         model_id=settings.vlm_model,
+        reask_invalid=True,
     )
 
 
@@ -230,6 +231,7 @@ def image_analysis_chain() -> Runnable:
         cache_type="vlm",
         output_model=ImageAnalysis,
         model_id=settings.vlm_model,
+        reask_invalid=True,
     )
 
 
@@ -242,6 +244,7 @@ def table_analysis_chain() -> Runnable:
         cache_type="vlm",
         output_model=TableAnalysis,
         model_id=settings.extract_llm_model,
+        reask_invalid=True,
     )
 
 @cache
@@ -253,6 +256,7 @@ def equation_analysis_chain() -> Runnable:
         cache_type="vlm",
         output_model=EquationAnalysis,
         model_id=settings.extract_llm_model,
+        reask_invalid=True,
     )
 
 

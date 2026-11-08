@@ -1,8 +1,8 @@
 """Table definitions and query templates — the SQL, kept out of the Python.
 
-``TABLES`` holds the DDL (including the BM25 and HNSW index creation),
-``SQL_TEMPLATES`` every parameterized statement, and ``NAMESPACE_TABLE_MAP``
-resolves a storage namespace to its table.
+``TABLES`` holds the DDL, ``SQL_TEMPLATES`` every parameterized statement, and
+``NAMESPACE_TABLE_MAP`` resolves a storage namespace to its table. Vector and BM25
+search live in Neo4j (``storage/neo4j/cypher.py``).
 """
 
 
@@ -24,9 +24,6 @@ NAMESPACE_TABLE_MAP = {
     NameSpace.KV_STORE_ENTITY_CHUNKS: "hybrid_rag_entity_chunks",
     NameSpace.KV_STORE_RELATION_CHUNKS: "hybrid_rag_relation_chunks",
     NameSpace.KV_STORE_LLM_RESPONSE_CACHE: "hybrid_rag_llm_cache",
-    NameSpace.VECTOR_STORE_CHUNKS: "hybrid_rag_vdb_chunks",
-    NameSpace.VECTOR_STORE_ENTITIES: "hybrid_rag_vdb_entities",
-    NameSpace.VECTOR_STORE_RELATIONSHIPS: "hybrid_rag_vdb_relations",
     NameSpace.DOC_STATUS: "hybrid_rag_doc_status",
 }
 
@@ -81,53 +78,6 @@ TABLES = {
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT hybrid_rag_doc_chunks_pk PRIMARY KEY (workspace, id)
-                    )"""
-    },
-    "hybrid_rag_vdb_chunks": {
-        "ddl": """CREATE TABLE hybrid_rag_vdb_chunks (
-                    id VARCHAR(255),
-                    workspace VARCHAR(255),
-                    full_doc_id VARCHAR(256),
-                    chunk_order_index INTEGER,
-                    tokens INTEGER,
-                    content TEXT,
-                    content_vector VECTOR(dimension),
-                    file_path TEXT NULL,
-                    content_cleaned TEXT NULL,
-                    -- BM25 key_field: unique, unlike id, which repeats across workspaces
-                    bm25_key TEXT GENERATED ALWAYS AS (workspace || ':' || id) STORED,
-                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
-                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
-                    CONSTRAINT hybrid_rag_vdb_chunks_pk PRIMARY KEY (workspace, id)
-                    )"""
-    },
-    "hybrid_rag_vdb_entities": {
-        "ddl": """CREATE TABLE hybrid_rag_vdb_entities (
-                    id VARCHAR(255),
-                    workspace VARCHAR(255),
-                    entity_name VARCHAR(512),
-                    content TEXT,
-                    content_vector VECTOR(dimension),
-                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
-                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
-                    chunk_ids VARCHAR(255)[] NULL,
-                    file_path TEXT NULL,
-	                CONSTRAINT hybrid_rag_vdb_entities_pk PRIMARY KEY (workspace, id)
-                    )"""
-    },
-    "hybrid_rag_vdb_relations": {
-        "ddl": """CREATE TABLE hybrid_rag_vdb_relations (
-                    id VARCHAR(255),
-                    workspace VARCHAR(255),
-                    source_id VARCHAR(512),
-                    target_id VARCHAR(512),
-                    content TEXT,
-                    content_vector VECTOR(dimension),
-                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
-                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
-                    chunk_ids VARCHAR(255)[] NULL,
-                    file_path TEXT NULL,
-	                CONSTRAINT hybrid_rag_vdb_relations_pk PRIMARY KEY (workspace, id)
                     )"""
     },
     "hybrid_rag_llm_cache": {
@@ -522,132 +472,4 @@ SQL_TEMPLATES = {
                       count=EXCLUDED.count,
                       update_time = EXCLUDED.update_time
                      """,
-    # SQL for VectorStorage
-    "upsert_chunk": """INSERT INTO {table_name} (workspace, id, tokens,
-                      chunk_order_index, full_doc_id, content, content_vector, file_path,
-                      content_cleaned, create_time, update_time)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                      ON CONFLICT (workspace,id) DO UPDATE
-                      SET tokens=EXCLUDED.tokens,
-                      chunk_order_index=EXCLUDED.chunk_order_index,
-                      full_doc_id=EXCLUDED.full_doc_id,
-                      content = EXCLUDED.content,
-                      content_vector=EXCLUDED.content_vector,
-                      file_path=EXCLUDED.file_path,
-                      content_cleaned=EXCLUDED.content_cleaned,
-                      update_time = EXCLUDED.update_time
-                     """,
-    "upsert_entity": """INSERT INTO {table_name} (workspace, id, entity_name, content,
-                      content_vector, chunk_ids, file_path, create_time, update_time)
-                      VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7, $8, $9)
-                      ON CONFLICT (workspace,id) DO UPDATE
-                      SET entity_name=EXCLUDED.entity_name,
-                      content=EXCLUDED.content,
-                      content_vector=EXCLUDED.content_vector,
-                      chunk_ids=EXCLUDED.chunk_ids,
-                      file_path=EXCLUDED.file_path,
-                      update_time=EXCLUDED.update_time
-                     """,
-    "upsert_relationship": """INSERT INTO {table_name} (workspace, id, source_id,
-                      target_id, content, content_vector, chunk_ids, file_path, create_time, update_time)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[], $8, $9, $10)
-                      ON CONFLICT (workspace,id) DO UPDATE
-                      SET source_id=EXCLUDED.source_id,
-                      target_id=EXCLUDED.target_id,
-                      content=EXCLUDED.content,
-                      content_vector=EXCLUDED.content_vector,
-                      chunk_ids=EXCLUDED.chunk_ids,
-                      file_path=EXCLUDED.file_path,
-                      update_time = EXCLUDED.update_time
-                     """,
-    # Read path (retrieval)
-    # The "+ 0" in every ORDER BY below keeps the HNSW index out of these queries on
-    # purpose. HNSW takes the ef_search nearest rows of the WHOLE shared table and only
-    # then applies `workspace = $1`, so a workspace that is a small share of the table
-    # gets few or none of its true nearest rows (probe: recall 0-34%; with
-    # hnsw.iterative_scan precision@k drops to ~50%). The exact path (workspace index +
-    # sort) is always correct; its cost grows with the workspace's own row count.
-    # ponytail: linear in workspace size; partition per workspace if one gets large.
-    "relationships": """
-                     SELECT source_id AS src_id,
-                            target_id AS tgt_id,
-                            EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at
-                     FROM {table_name}
-                     WHERE workspace = $1
-                       AND content_vector <=> $4::{vector_cast} < $2
-                     ORDER BY (content_vector <=> $4::{vector_cast}) + 0
-                     LIMIT $3;
-                     """,
-    "entities": """
-                SELECT entity_name,
-                       EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at
-                FROM {table_name}
-                WHERE workspace = $1
-                  AND content_vector <=> $4::{vector_cast} < $2
-                ORDER BY (content_vector <=> $4::{vector_cast}) + 0
-                LIMIT $3;
-                """,
-    # Entity resolution candidates: like "entities", plus the cosine distance.
-    "entities_nearest": """
-                SELECT entity_name, (content_vector <=> $4::{vector_cast}) AS distance
-                FROM {table_name}
-                WHERE workspace = $1
-                  AND content_vector <=> $4::{vector_cast} < $2
-                ORDER BY (content_vector <=> $4::{vector_cast}) + 0
-                LIMIT $3;
-                """,
-    # Each arm takes its top $3 with ORDER BY ... LIMIT, then ranks only those rows:
-    # that is what lets ParadeDB run a top-K scan, and makes the top $3 guaranteed.
-    # ``+ 0`` keeps the vector arm an exact scan of the workspace rather than an
-    # HNSW scan filtered afterwards. The BM25 index holds ``workspace`` as a
-    # literal, so ``workspace = $1`` is a term in the index, not a heap filter.
-    "chunks_hybrid_bm25": """
-            WITH semantic_search AS (
-                SELECT *, ROW_NUMBER() OVER (ORDER BY vector_distance) AS rank
-                FROM (
-                    SELECT
-                        id,
-                        content,
-                        file_path,
-                        EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at,
-                        (content_vector <=> $4::{vector_cast}) AS vector_distance
-                    FROM {table_name}
-                    WHERE workspace = $1
-                      AND content_vector <=> $4::{vector_cast} < $2
-                    ORDER BY (content_vector <=> $4::{vector_cast}) + 0
-                    LIMIT $3
-                ) top_semantic
-            ),
-            bm25_search AS (
-                -- id breaks score ties (common in BM25) so ranks are reproducible; it
-                -- stays out of the inner ORDER BY, where it would disable the top-K scan.
-                SELECT *, ROW_NUMBER() OVER (ORDER BY bm25_score DESC, id) AS rank
-                FROM (
-                    SELECT
-                        id,
-                        content,
-                        file_path,
-                        EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at,
-                        pdb.score(bm25_key) AS bm25_score
-                    FROM {table_name}
-                    WHERE workspace = $1
-                      AND content_cleaned ||| $5
-                    ORDER BY pdb.score(bm25_key) DESC
-                    LIMIT $3
-                ) top_bm25
-            )
-            SELECT
-                COALESCE(s.id,         b.id)         AS id,
-                COALESCE(s.content,    b.content)    AS content,
-                COALESCE(s.file_path,  b.file_path)  AS file_path,
-                COALESCE(s.created_at, b.created_at) AS created_at,
-                s.vector_distance                    AS vector_distance,
-                b.bm25_score                         AS bm25_score,
-                COALESCE($6 / (60.0 + s.rank), 0.0) +
-                COALESCE($7 / (60.0 + b.rank), 0.0) AS rrf_score
-            FROM semantic_search s
-            FULL OUTER JOIN bm25_search b ON s.id = b.id
-            ORDER BY rrf_score DESC
-            LIMIT $3;
-        """,
 }

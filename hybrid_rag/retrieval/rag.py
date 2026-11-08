@@ -9,8 +9,8 @@ from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from typing import Any, Callable, final, Optional
 from hybrid_rag.core.concurrency import limit_async_func_call
-from hybrid_rag.storage.neo4j import Neo4JStorage
-from hybrid_rag.storage.postgres import PGKVStorage, PGVectorStorage
+from hybrid_rag.storage.neo4j import Neo4JStorage, Neo4jVectorStorage
+from hybrid_rag.storage.postgres import PGKVStorage
 from hybrid_rag.core.base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage, StoragesStatus
 from hybrid_rag.retrieval.types import QueryParam
 from hybrid_rag.core.constants import NameSpace
@@ -158,7 +158,7 @@ class RetrievalRAG:
 
         # Initialize all storages
         self.key_string_value_json_storage_cls = partial(PGKVStorage, global_config=global_config)
-        self.vector_db_storage_cls = partial(PGVectorStorage, global_config=global_config)
+        self.vector_db_storage_cls = partial(Neo4jVectorStorage, global_config=global_config)
         self.graph_storage_cls = partial(Neo4JStorage, global_config=global_config)
 
         self.llm_response_cache: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore

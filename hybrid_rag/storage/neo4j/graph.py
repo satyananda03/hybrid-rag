@@ -11,17 +11,21 @@ from hybrid_rag.config import settings
 from hybrid_rag.core.base import BaseGraphStorage
 from hybrid_rag.core.types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
 from hybrid_rag.core.utils import validate_workspace
+from hybrid_rag.storage.neo4j import cypher
+from hybrid_rag.storage.neo4j.cypher import ENTITY_FULLTEXT_INDEX as FULLTEXT_INDEX, HIDDEN, LABEL, hidden_projection
 from hybrid_rag.storage.neo4j.connection import get_neo4j_driver
 from hybrid_rag.storage.shared import get_data_init_lock
 
 logger = logging.getLogger(__name__)
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
-LABEL = "HybridRagEntity"
-KEY_CONSTRAINT = "hybrid_rag_entity_key"
-FULLTEXT_INDEX = "hybrid_rag_entity_id_fulltext"
 WS_NODE = f"(n:{LABEL} {{workspace: $workspace}}) WHERE n.entity_id IS NOT NULL"
 DEFAULT_EDGE = {"weight": 1.0, "source_id": None, "description": None, "keywords": None}
+# Node / edge properties without the isolation key and the vector-search fields
+# (cypher.HIDDEN): those never leave this module, and are never sent at all by the
+# reads that project them away.
+NODE = hidden_projection("n")
+EDGE = hidden_projection("r")
 
 READ_RETRY = retry(
     stop=stop_after_attempt(3),
@@ -51,31 +55,26 @@ WRITE_RETRY = retry(
 )
 
 async def create_schema() -> None:
-    """The key constraint and full-text index, global rather than per workspace.
+    """Constraints and graph + search indexes (:data:`cypher.SCHEMA`), global rather than per workspace.
 
     Called by :mod:`hybrid_rag.db_init` only; the runtime runs no DDL. Idempotent.
     """
     async with get_neo4j_driver().session(database=settings.neo4j_database or None) as session:
-        await (await session.run(
-            f"CREATE CONSTRAINT {KEY_CONSTRAINT} IF NOT EXISTS "
-            f"FOR (n:{LABEL}) REQUIRE (n.workspace, n.entity_id) IS UNIQUE"
-        )).consume()
-        await (await session.run(
-            f"CREATE FULLTEXT INDEX {FULLTEXT_INDEX} IF NOT EXISTS "
-            f"FOR (n:{LABEL}) ON EACH [n.entity_id] "
-            "OPTIONS {indexConfig: {`fulltext.analyzer`: 'cjk', `fulltext.eventually_consistent`: true}}"
-        )).consume()
+        for statement in cypher.SCHEMA:
+            await (await session.run(statement)).consume()
 
 
-def _node_props(node) -> dict[str, Any]:
-    """Node properties as callers have always seen them: without the isolation key."""
-    props = dict(node)
-    props.pop("workspace", None)
+def _visible_props(element) -> dict[str, Any]:
+    """Node or edge properties as callers have always seen them: no isolation key, no search fields."""
+    props = dict(element)
+    for key in ("workspace", *HIDDEN):
+        props.pop(key, None)
     return props
 
 
 def _edge_props(props: dict) -> dict:
-    """Edge properties, with any missing ``DEFAULT_EDGE`` key appended."""
+    """Visible edge properties, with any missing ``DEFAULT_EDGE`` key appended."""
+    props = _visible_props(props)
     return {**props, **{k: v for k, v in DEFAULT_EDGE.items() if k not in props}}
 
 
@@ -159,18 +158,19 @@ class Neo4JStorage(BaseGraphStorage):
     @READ_RETRY
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         records = await self._read(
-            f"MATCH (n:{LABEL} {{workspace: $workspace, entity_id: $entity_id}}) RETURN n", entity_id=node_id
+            f"MATCH (n:{LABEL} {{workspace: $workspace, entity_id: $entity_id}}) RETURN {NODE} AS n",
+            entity_id=node_id,
         )
-        return _node_props(records[0]["n"]) if records else None
+        return _visible_props(records[0]["n"]) if records else None
 
     @READ_RETRY
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         records = await self._read(
             f"UNWIND $node_ids AS id MATCH (n:{LABEL} {{workspace: $workspace, entity_id: id}}) "
-            "RETURN n.entity_id AS entity_id, n",
+            f"RETURN n.entity_id AS entity_id, {NODE} AS n",
             node_ids=node_ids,
         )
-        return {r["entity_id"]: _node_props(r["n"]) for r in records}
+        return {r["entity_id"]: _visible_props(r["n"]) for r in records}
 
     @READ_RETRY
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
@@ -195,12 +195,12 @@ class Neo4JStorage(BaseGraphStorage):
     async def get_edge(self, source_node_id: str, target_node_id: str) -> dict[str, str] | None:
         records = await self._read(
             f"MATCH (a:{LABEL} {{workspace: $workspace, entity_id: $src}})"
-            f"-[r]-(b:{LABEL} {{workspace: $workspace, entity_id: $tgt}}) RETURN properties(r) AS p LIMIT 1",
+            f"-[r]-(b:{LABEL} {{workspace: $workspace, entity_id: $tgt}}) RETURN {EDGE} AS p LIMIT 1",
             src=source_node_id, tgt=target_node_id,
         )
         if not records:
             return None
-        props = dict(records[0]["p"])
+        props = _visible_props(records[0]["p"])
         for key in DEFAULT_EDGE.keys() - props.keys():
             logger.warning(
                 f"[{self.workspace}] Edge between {source_node_id} and {target_node_id} "
@@ -214,7 +214,7 @@ class Neo4JStorage(BaseGraphStorage):
             f"UNWIND $pairs AS pair "
             f"MATCH (a:{LABEL} {{workspace: $workspace, entity_id: pair.src}})"
             f"-[r:DIRECTED]-(b:{LABEL} {{workspace: $workspace, entity_id: pair.tgt}}) "
-            "RETURN pair.src AS src, pair.tgt AS tgt, collect(properties(r)) AS edges",
+            f"RETURN pair.src AS src, pair.tgt AS tgt, collect({EDGE}) AS edges",
             pairs=pairs,
         )
         return {(r["src"], r["tgt"]): _edge_props(r["edges"][0]) for r in records if r["edges"]}
@@ -285,7 +285,8 @@ class Neo4JStorage(BaseGraphStorage):
             f"MATCH (source:{LABEL} {{workspace: $workspace, entity_id: row.src}}) "
             f"WITH source, row "
             f"MATCH (target:{LABEL} {{workspace: $workspace, entity_id: row.tgt}}) "
-            "MERGE (source)-[r:DIRECTED]-(target) SET r += row.props",
+            # r.workspace: the relation vector index filters on it (cypher.py).
+            "MERGE (source)-[r:DIRECTED]-(target) SET r += row.props, r.workspace = $workspace",
             edges=[{"src": src, "tgt": tgt, "props": data} for src, tgt, data in edges],
         )
 
@@ -314,16 +315,16 @@ class Neo4JStorage(BaseGraphStorage):
 
     # ── Whole-workspace reads (graph API, repair script) ───────────────────
     async def get_all_nodes(self) -> list[dict]:
-        records = await self._read(f"MATCH {WS_NODE} RETURN n")
-        return [{**_node_props(r["n"]), "id": r["n"].get("entity_id")} for r in records]
+        records = await self._read(f"MATCH {WS_NODE} RETURN {NODE} AS n")
+        return [{**_visible_props(r["n"]), "id": r["n"].get("entity_id")} for r in records]
 
     async def get_all_edges(self) -> list[dict]:
         records = await self._read(
             f"MATCH (a:{LABEL} {{workspace: $workspace}})-[r]-(b:{LABEL} {{workspace: $workspace}}) "
             "WHERE a.entity_id IS NOT NULL "
-            "RETURN DISTINCT a.entity_id AS source, b.entity_id AS target, properties(r) AS properties"
+            f"RETURN DISTINCT a.entity_id AS source, b.entity_id AS target, {EDGE} AS properties"
         )
-        return [{**r["properties"], "source": r["source"], "target": r["target"]} for r in records]
+        return [{**_visible_props(r["properties"]), "source": r["source"], "target": r["target"]} for r in records]
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """Entity names by degree, most connected first."""
@@ -450,20 +451,23 @@ class Neo4JStorage(BaseGraphStorage):
             return await self._bfs_subgraph(node_label, max_depth, max_nodes)
 
         if records:
+            # ponytail: these reads return whole Node/Relationship objects, so the vectors
+            # travel over Bolt and are only dropped here (dashboard only, <= max_nodes);
+            # project them away in Cypher if the graph view gets slow.
             seen_nodes, seen_edges = set(), set()
             for info in records[0]["node_info"]:
                 node = info["node"]
                 if node.element_id not in seen_nodes:
                     seen_nodes.add(node.element_id)
                     result.nodes.append(KnowledgeGraphNode(
-                        id=f"{node.element_id}", labels=[node.get("entity_id")], properties=_node_props(node)
+                        id=f"{node.element_id}", labels=[node.get("entity_id")], properties=_visible_props(node)
                     ))
             for rel in records[0]["relationships"]:
                 if rel.element_id not in seen_edges:
                     seen_edges.add(rel.element_id)
                     result.edges.append(KnowledgeGraphEdge(
                         id=f"{rel.element_id}", type=rel.type, source=f"{rel.start_node.element_id}",
-                        target=f"{rel.end_node.element_id}", properties=dict(rel),
+                        target=f"{rel.end_node.element_id}", properties=_visible_props(rel),
                     ))
             logger.info(
                 f"[{self.workspace}] Subgraph query successful | Node count: {len(result.nodes)} | "
@@ -481,7 +485,7 @@ class Neo4JStorage(BaseGraphStorage):
             return result
         start = records[0]["n"]
         queue = deque([(KnowledgeGraphNode(
-            id=f"{start.get('entity_id')}", labels=[start.get("entity_id")], properties=_node_props(start)
+            id=f"{start.get('entity_id')}", labels=[start.get("entity_id")], properties=_visible_props(start)
         ), 0)])
         visited_nodes: set[str] = set()
         visited_edges: set[str] = set()
@@ -516,13 +520,13 @@ class Neo4JStorage(BaseGraphStorage):
                 if pair not in visited_pairs and (target_id in visited_nodes or depth < max_depth):
                     result.edges.append(KnowledgeGraphEdge(
                         id=edge_id, type=record["r"].type, source=f"{node.id}", target=f"{target_id}",
-                        properties=dict(record["r"]),
+                        properties=_visible_props(record["r"]),
                     ))
                     visited_edges.add(edge_id)
                     visited_pairs.add(pair)
                 if target_id not in visited_nodes and depth < max_depth:
                     queue.append((KnowledgeGraphNode(
-                        id=f"{target_id}", labels=[target_id], properties=_node_props(record["b"])
+                        id=f"{target_id}", labels=[target_id], properties=_visible_props(record["b"])
                     ), depth + 1))
 
         logger.info(

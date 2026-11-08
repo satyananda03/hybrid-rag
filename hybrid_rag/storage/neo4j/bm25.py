@@ -14,11 +14,11 @@ def get_stopwords() -> frozenset[str]:
         try:
             from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
             stopwords = frozenset(StopWordRemoverFactory().get_stop_words()) - KEEP
-            logger.info("PostgreSQL, Sastrawi stopwords loaded for BM25 preprocessing")
+            logger.info("Sastrawi stopwords loaded for BM25 preprocessing")
         except ImportError:
             stopwords = frozenset()
             logger.warning(
-                "PostgreSQL, Sastrawi not found. Stopword removal skipped, but basic cleaning (lowercase/punctuation) will still apply."
+                "Sastrawi not found. Stopword removal skipped, but basic cleaning (lowercase/punctuation) will still apply."
             )
     return stopwords
 

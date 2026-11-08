@@ -22,13 +22,12 @@ import contextlib
 import os
 import re
 import time
-from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Tuple, TypeVar
+from typing import Any, Dict, List, Tuple
 
 from hybrid_rag.core.chunk_schema import format_location, normalize_page
 from hybrid_rag.core.utils import compute_mdhash_id
-from hybrid_rag.ingestion.utils import INVALID_OUTPUT_ERRORS, raise_first_failure
+from hybrid_rag.ingestion.utils import raise_first_failure
 from hybrid_rag.storage.shared import get_storage_keyed_lock
 from hybrid_rag.config import settings
 import logging
@@ -55,22 +54,6 @@ class MultimodalAnalysisError(RuntimeError):
             f"{item_info['type']} item {item_info['index']} "
             f"({format_location(item_info['page_idx']) or 'no page'}) could not be analyzed: {cause}"
         )
-
-
-T = TypeVar("T")
-
-
-async def retry_invalid_output_once(call: Callable[[], Awaitable[T]], label: str) -> T:
-    """``await call()``, asked once more if the model's reply breaks its output schema.
-
-    A malformed reply is never cached, so the retry really asks the model again.
-    A second invalid reply, and any other error, propagates to the caller.
-    """
-    try:
-        return await call()
-    except INVALID_OUTPUT_ERRORS as e:
-        logger.warning(f"{label}: invalid model output, retrying once: {str(e)[:500]}")
-        return await call()
 
 
 class ImageUnavailableError(RuntimeError):
@@ -188,16 +171,14 @@ class _AnalyzeMixin:
             cache_keys: List[str] = []
             async with semaphore:
                 try:
-                    description, entity_info = await retry_invalid_output_once(
-                        partial(
-                            processor.generate_description_only,
-                            modal_content={**item, "_entity_registry": doc_metadata.get("kg_entity_registry")},
-                            content_type=content_type,
-                            item_info=item_info,
-                            entity_name=None,  # Let LLM auto-generate
-                            cache_keys=cache_keys,
-                        ),
-                        label=f"{content_type} item {item_info['index']}",
+                    # An invalid reply is already asked again, with its error, by the
+                    # chain (cached_chain(reask_invalid=True)).
+                    description, entity_info = await processor.generate_description_only(
+                        modal_content={**item, "_entity_registry": doc_metadata.get("kg_entity_registry")},
+                        content_type=content_type,
+                        item_info=item_info,
+                        entity_name=None,  # Let LLM auto-generate
+                        cache_keys=cache_keys,
                     )
                 except Exception as e:
                     raise MultimodalAnalysisError(item_info, e) from e

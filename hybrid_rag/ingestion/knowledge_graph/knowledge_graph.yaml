@@ -201,11 +201,11 @@ summarize_entity_descriptions:
   system_prompt: |
     <role>
     ROLE : You are a Knowledge Graph Specialist, proficient in data curation and synthesis.
-    LANGUAGE : BAHASA INDONESIA
+    OUTPUT LANGUAGE : BAHASA INDONESIA
     </role>
 
     <task>
-    Synthesize the descriptions of one entity or relation into a single comprehensive, cohesive summary.
+    Synthesize the descriptions of one entity or relation into a proper summary.
     </task>
 
     <instructions>

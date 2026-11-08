@@ -41,8 +41,8 @@ import logging
 
 from hybrid_rag.config import settings
 from hybrid_rag.ingestion.pipeline import _PipelineMixin
-from hybrid_rag.storage.neo4j import Neo4JStorage
-from hybrid_rag.storage.postgres import PGDocStatusStorage, PGKVStorage, PGVectorStorage
+from hybrid_rag.storage.neo4j import Neo4JStorage, Neo4jVectorStorage
+from hybrid_rag.storage.postgres import PGDocStatusStorage, PGKVStorage
 from hybrid_rag.ingestion.deletion.deletion import _DeletionMixin
 from hybrid_rag.ingestion.db_schema.ingest import _DbSchemaMixin
 from hybrid_rag.ingestion.knowledge_graph.purge import _PurgeMixin
@@ -266,7 +266,7 @@ class IngestionRAG(
 
         # Initialize all storages
         self.key_string_value_json_storage_cls = partial(PGKVStorage, global_config=global_config)
-        self.vector_db_storage_cls = partial(PGVectorStorage, global_config=global_config)
+        self.vector_db_storage_cls = partial(Neo4jVectorStorage, global_config=global_config)
         self.graph_storage_cls = partial(Neo4JStorage, global_config=global_config)
 
         self.llm_response_cache: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore

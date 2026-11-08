@@ -1,7 +1,6 @@
 
 """PostgreSQL connection pool, schema bootstrap, and batching helpers."""
 import asyncio
-import hashlib
 import json
 from typing import (
     Any,
@@ -9,7 +8,6 @@ from typing import (
     Callable,
     TypeVar,
 )
-import numpy as np
 
 
 from hybrid_rag.config import settings
@@ -30,7 +28,6 @@ import logging
 
 import asyncpg  # type: ignore
 from asyncpg import Pool  # type: ignore
-from pgvector.asyncpg import register_vector  # type: ignore
 
 from hybrid_rag.storage.postgres.sql import TABLES
 
@@ -40,11 +37,8 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# PostgreSQL identifier length limit (in bytes)
-PG_MAX_IDENTIFIER_LENGTH = 63
-
 # Flush-time batching limits shared by the PostgreSQL non-graph write paths
-# (PGKVStorage, PGVectorStorage, PGDocStatusStorage). Mirrors the MONGO_* /
+# (PGKVStorage, PGDocStatusStorage). Mirrors the MONGO_* /
 # OPENSEARCH_* contract: the payload-byte budget is the primary limiter and the
 # record-count caps are a secondary guard. Unlike Mongo/OpenSearch there is no
 # single server-side bulk message to stay under -- asyncpg's executemany
@@ -59,10 +53,9 @@ def _estimate_record_bytes(record: tuple[Any, ...]) -> int:
     """Estimate the serialized byte size of one asyncpg parameter tuple.
 
     A splitting *heuristic* for ``_chunk_by_budget``, not the exact wire size.
-    numpy vectors dominate vector rows and large text dominates KV rows, so the
-    estimate sums those accurately and treats scalars as a small constant:
+    Large text dominates KV rows, so the estimate sums it accurately and treats
+    scalars as a small constant:
 
-      * ``np.ndarray`` -> ``.nbytes`` (the binary pgvector payload)
       * ``str`` -> UTF-8 byte length
       * ``bytes`` / ``bytearray`` -> ``len``
       * ``dict`` / ``list`` -> compact-JSON UTF-8 length (already-serialized
@@ -73,9 +66,7 @@ def _estimate_record_bytes(record: tuple[Any, ...]) -> int:
     """
     total = 0
     for field_value in record:
-        if isinstance(field_value, np.ndarray):
-            total += field_value.nbytes
-        elif isinstance(field_value, str):
+        if isinstance(field_value, str):
             total += len(field_value.encode("utf-8"))
         elif isinstance(field_value, (bytes, bytearray)):
             total += len(field_value)
@@ -170,49 +161,6 @@ def _resolve_pg_batch_limits() -> tuple[int, int, int]:
     return upsert_payload_bytes, upsert_records, delete_records
 
 
-# Sufiks indeks vektor yang dijatuhkan saat berganti tipe. ivfflat/vchordrq
-# tidak bisa lagi DIBUAT (lihat create_sql di bawah), tapi tetap didaftarkan di
-# sini supaya indeks warisan dari konfigurasi lama ikut terbersihkan.
-_VECTOR_INDEX_SUFFIXES = [
-    "hnsw_cosine",
-    "hnsw_halfvec_cosine",
-    "ivfflat_cosine",
-    "vchordrq_cosine",
-]
-
-def _safe_index_name(table_name: str, index_suffix: str) -> str:
-    """
-    Generate a PostgreSQL-safe index name that won't be truncated.
-
-    PostgreSQL silently truncates identifiers to 63 bytes. This function
-    ensures index names stay within that limit by hashing long table names.
-
-    Args:
-        table_name: The table name (may be long with model suffix)
-        index_suffix: The index type suffix (e.g., 'hnsw_cosine', 'id', 'workspace_id')
-
-    Returns:
-        A deterministic index name that fits within 63 bytes
-    """
-    # Construct the full index name
-    full_name = f"idx_{table_name.lower()}_{index_suffix}"
-
-    # If it fits within the limit, use it as-is
-    if len(full_name.encode("utf-8")) <= PG_MAX_IDENTIFIER_LENGTH:
-        return full_name
-
-    # Otherwise, hash the table name to create a shorter unique identifier
-    # Keep 'idx_' prefix and suffix readable, hash the middle
-    hash_input = table_name.lower().encode("utf-8")
-    table_hash = hashlib.md5(hash_input).hexdigest()[:12]  # 12 hex chars
-
-    # Format: idx_{hash}_{suffix} - guaranteed to fit
-    # Maximum: idx_ (4) + hash (12) + _ (1) + suffix (variable) = 17 + suffix
-    shortened_name = f"idx_{table_hash}_{index_suffix}"
-
-    return shortened_name
-
-
 class PostgreSQLDB:
     def __init__(self, config: dict[str, Any], **kwargs: Any):
         self.host = config["host"]
@@ -227,12 +175,6 @@ class PostgreSQLDB:
         # server mengaktifkannya. Sertifikat klien (verify-ca/verify-full) tidak
         # didukung — tambahkan lagi kalau memang dipakai.
         self.ssl_mode = config.get("ssl_mode")
-
-        # Vector configuration. pgvector selalu aktif — satu-satunya vector
-        # storage yang dipakai pipeline ini adalah PGVectorStorage.
-        self.vector_index_type = config.get("vector_index_type")
-        self.hnsw_m = config.get("hnsw_m")
-        self.hnsw_ef = config.get("hnsw_ef")
 
         # Schema configuration — defaults to "rag". All hybrid_rag tables are
         # created inside this schema. The search_path GUC is set both at pool
@@ -302,16 +244,13 @@ class PostgreSQLDB:
         return connection_params
 
     async def bootstrap(self) -> None:
-        """CREATE SCHEMA and the vector extension, before the pool exists.
+        """CREATE SCHEMA, before the pool exists (its search_path names the schema).
 
-        Runs on a connection of its own: the pool registers the pgvector codec
-        on every connection, which fails on a database without the extension.
         Called by :mod:`hybrid_rag.db_init` only; the runtime runs no DDL.
         """
         conn = await asyncpg.connect(**self._connect_kwargs())
         try:
             await self._ensure_schema(conn)
-            await self.configure_vector_extension(conn)
         finally:
             await conn.close()
 
@@ -331,21 +270,9 @@ class PostgreSQLDB:
             else wait_fixed(0)
         )
 
-        async def _init_connection(connection: asyncpg.Connection) -> None:
-            """Daftarkan codec pgvector pada tiap koneksi fisik baru.
-
-            Dipanggil sekali per pembuatan koneksi (bukan saat pool dipakai
-            ulang). register_vector adalah registrasi codec level-Python yang
-            selamat dari RESET ALL milik asyncpg.
-            """
-            await register_vector(connection)
-
         async def _create_pool_once() -> None:
-            # The vector extension must already exist (make db-init): the
-            # register_vector callback fails on a database without it.
             pool = await asyncpg.create_pool(
                 **connection_params,
-                init=_init_connection,  # register pgvector codec on new connections
                 # Tanpa reset=: cleanup bawaan asyncpg (RESET ALL) sudah
                 # mengembalikan search_path ke nilai server_settings di atas.
             )  # type: ignore
@@ -462,62 +389,9 @@ class PostgreSQLDB:
             logger.error(f"PostgreSQL, Failed to create schema '{self.schema_name}': {e}")
             raise
 
-    async def configure_vector_extension(self, connection: asyncpg.Connection) -> None:
-        """Create VECTOR extension if it doesn't exist for vector similarity operations.
-
-        When vector_index_type is HNSW_HALFVEC, validates that pgvector >= 0.7.0
-        (required for halfvec support) and raises RuntimeError if older.
-        """
-        try:
-            await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")  # type: ignore
-            logger.info("PostgreSQL, VECTOR extension enabled")
-        except Exception as e:
-            logger.warning(f"Could not create VECTOR extension: {e}")
-            # Don't raise - let the system continue without vector extension
-            return
-
-        if getattr(self, "vector_index_type", None) == "HNSW_HALFVEC":
-            row = await connection.fetchrow(
-                "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
-            )
-            if not row or not row["extversion"]:
-                raise RuntimeError(
-                    "POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC requires the pgvector "
-                    "extension. Ensure it is installed and CREATE EXTENSION vector succeeded."
-                )
-            raw_version = row["extversion"]
-            try:
-                parts = [int(p) for p in str(raw_version).split(".")[:3]]
-                while len(parts) < 3:
-                    parts.append(0)
-                version_tuple = (parts[0], parts[1], parts[2])
-            except (ValueError, IndexError):
-                raise RuntimeError(
-                    f"Could not parse pgvector version {raw_version!r}. "
-                    "HNSW_HALFVEC requires pgvector >= 0.7.0."
-                ) from None
-            if version_tuple < (0, 7, 0):
-                raise RuntimeError(
-                    f"POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC requires pgvector >= 0.7.0, "
-                    f"but installed version is {raw_version}. Upgrade the pgvector extension "
-                    "or use a different index type (e.g. HNSW with embeddings <= 2000 dimensions)."
-                )
-
     async def check_tables(self):
-        # Vector tables that should be skipped - they are created by PGVectorStorage.setup_table()
-        # with proper embedding model and dimension suffix for data isolation
-        vector_tables_to_skip = {
-            "hybrid_rag_vdb_chunks",
-            "hybrid_rag_vdb_entities",
-            "hybrid_rag_vdb_relations",
-        }
-
-        # First create all tables (except vector tables)
+        # First create all tables
         for k, v in TABLES.items():
-            # Skip vector tables - they are created by PGVectorStorage.setup_table()
-            if k in vector_tables_to_skip:
-                continue
-
             if await self.check_table_exists(k):
                 continue
             try:
@@ -529,8 +403,7 @@ class PostgreSQLDB:
 
         # Batch check all indexes at once (optimization: single query instead of N queries)
         try:
-            # Exclude vector tables from index creation since they are created by PGVectorStorage.setup_table()
-            table_names = [k for k in TABLES.keys() if k not in vector_tables_to_skip]
+            table_names = list(TABLES)
             table_names_lower = [t.lower() for t in table_names]
 
             # Get all existing indexes for our tables in one query
@@ -600,7 +473,6 @@ class PostgreSQLDB:
         except Exception as e:
             logger.error(f"PostgreSQL, Failed to batch check/create indexes: {e}")
 
-        # Vector tables and their indexes are created by PGVectorStorage.setup_table().
         try:
             await self._create_doc_status_indexes()
         except Exception as e:
@@ -676,79 +548,6 @@ class PostgreSQLDB:
                 logger.warning(
                     f"Failed to create index {index['name']} ({type(e).__name__}): {e}"
                 )
-
-    async def _create_vector_index(self, table_name: str, embedding_dim: int):
-        """
-        Create vector index for a specific table.
-
-        Args:
-            table_name: Name of the table to create index on
-            embedding_dim: Embedding dimension for the vector column
-        """
-        if not self.vector_index_type:
-            return
-
-        create_sql = {
-            "HNSW": f"""
-                CREATE INDEX {{vector_index_name}}
-                ON {{table_name}} USING hnsw (content_vector vector_cosine_ops)
-                WITH (m = {self.hnsw_m}, ef_construction = {self.hnsw_ef})
-            """,
-            "HNSW_HALFVEC": f"""
-                CREATE INDEX {{vector_index_name}}
-                ON {{table_name}} USING hnsw (content_vector halfvec_cosine_ops)
-                WITH (m = {self.hnsw_m}, ef_construction = {self.hnsw_ef})
-            """,
-        }
-
-        if self.vector_index_type not in create_sql:
-            logger.warning(
-                f"Unsupported vector index type: {self.vector_index_type}. "
-                "Supported types: HNSW, HNSW_HALFVEC"
-            )
-            return
-
-        k = table_name
-        # Use _safe_index_name to avoid PostgreSQL's 63-byte identifier truncation
-        index_suffix = f"{self.vector_index_type.lower()}_cosine"
-        vector_index_name = _safe_index_name(k, index_suffix)
-        check_vector_index_sql = f"""
-            SELECT 1 FROM pg_indexes
-            WHERE schemaname = current_schema()
-              AND indexname = '{vector_index_name}' AND tablename = '{k.lower()}'
-        """
-        if self.vector_index_type == "HNSW_HALFVEC":
-            column_type = "HALFVEC"
-        else:
-            column_type = "VECTOR"
-        try:
-            vector_index_exists = await self.query(check_vector_index_sql)
-            if not vector_index_exists:
-                for suffix in _VECTOR_INDEX_SUFFIXES:
-                    if suffix == index_suffix:
-                        continue
-                    old_name = _safe_index_name(k, suffix)
-                    await self.execute(f"DROP INDEX IF EXISTS {old_name}")
-                alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE {column_type}({embedding_dim})"
-                await self.execute(alter_sql)
-                logger.debug(f"Ensured vector dimension for {k}")
-                logger.info(
-                    f"Creating {self.vector_index_type} index {vector_index_name} on table {k}"
-                )
-                await self.execute(
-                    create_sql[self.vector_index_type].format(
-                        vector_index_name=vector_index_name, table_name=k
-                    )
-                )
-                logger.info(
-                    f"Successfully created vector index {vector_index_name} on table {k}"
-                )
-            else:
-                logger.info(
-                    f"{self.vector_index_type} vector index {vector_index_name} already exists on table {k}"
-                )
-        except Exception as e:
-            logger.error(f"Failed to create vector index on table {k}, Got: {e}")
 
     async def query(
         self,
@@ -851,9 +650,6 @@ def _pool_config() -> dict[str, Any]:
         "database": settings.postgres_database,
         "max_connections": settings.pg_async_pool_size,
         "ssl_mode": settings.postgres_ssl_mode,
-        "vector_index_type": settings.postgres_vector_index_type,
-        "hnsw_m": settings.postgres_hnsw_m,
-        "hnsw_ef": settings.postgres_hnsw_ef,
         "connection_retry_attempts": min(100, settings.postgres_connection_retries),
         "connection_retry_backoff": min(300.0, settings.postgres_connection_retry_backoff),
         "connection_retry_backoff_max": min(600.0, settings.postgres_connection_retry_backoff_max),
