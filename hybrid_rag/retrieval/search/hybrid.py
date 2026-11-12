@@ -11,11 +11,9 @@ Dense and sparse return the same chunks and are fused with weighted RRF
 :mod:`hybrid_rag.retrieval.context` collects and merges with these. Nothing is budgeted
 or formatted here.
 """
-
 import asyncio
 import logging
 from typing import Any
-
 from hybrid_rag.config import settings
 from hybrid_rag.core.base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage
 from hybrid_rag.retrieval.search.fusion import weighted_rrf
@@ -24,7 +22,6 @@ from hybrid_rag.retrieval.types import QueryParam
 from hybrid_rag.storage.neo4j import Neo4jBM25Storage
 
 logger = logging.getLogger(__name__)
-
 
 async def hybrid_search(
     query: str,

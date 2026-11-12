@@ -4,7 +4,7 @@
 
     rag.py        RetrievalRAG: the read-side storages, ``aretrieve``
     query.py      keyword extraction + the 4-stage orchestration
-    search/       stage 1: graph (entities, relations) + dense/BM25 chunks fused by RRF
+    search/       stage 1: entities, relations and hybrid (vector + BM25) chunks, in Neo4j
     context.py    stages 2-4: truncate, merge chunks, render the context
     rerank.py     the rerank pass inside stage 3
     keywords/     the keyword-extraction prompt, schema and cached chain

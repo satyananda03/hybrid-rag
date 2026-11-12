@@ -230,10 +230,10 @@ class PostgreSQLDB:
         # TLS: hanya mode sederhana. asyncpg merundingkan sendiri sisanya.
         if self.ssl_mode:
             mode = self.ssl_mode.lower()
-            if mode in ("require", "prefer", "allow"):
-                connection_params["ssl"] = True
-            elif mode == "disable":
-                connection_params["ssl"] = False
+            # As a string asyncpg reads it like libpq: "require" encrypts without
+            # verifying the certificate (ssl=True would verify it).
+            if mode in ("require", "prefer", "allow", "disable"):
+                connection_params["ssl"] = mode
             else:
                 logger.warning(
                     f"PostgreSQL, mode SSL '{self.ssl_mode}' tidak didukung "
@@ -289,7 +289,7 @@ class PostgreSQLDB:
                 with attempt:
                     await _create_pool_once()
 
-            ssl_status = "with SSL" if connection_params.get("ssl") else "without SSL"
+            ssl_status = f"ssl={connection_params.get('ssl', 'default')}"
             logger.info(
                 f"PostgreSQL, Connected to database at {self.host}:{self.port}/{self.database} {ssl_status}"
             )

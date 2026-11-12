@@ -1,6 +1,6 @@
 """Rank fusion of search arms whose hits share an ``id``."""
 
-RRF_K = 60.0  # the usual RRF constant (Neo4j hybrid-search guide, Cormack et al.)
+RRF_K = 60.0
 
 def weighted_rrf(arms: list[tuple[list[dict], float]], limit: int, k: float = RRF_K) -> list[dict]:
     """Weighted Reciprocal Rank Fusion of ``(hits, weight)`` arms, each ranked best first.

@@ -9,17 +9,14 @@ Local and global results are interleaved round-robin. The result is entities and
 relations, not chunks: their chunks are collected later through ``source_id``
 (:func:`hybrid_rag.retrieval.context._merge_all_chunks`).
 """
-
 import asyncio
 import logging
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass
 from typing import Any
-
 from hybrid_rag.core.base import BaseGraphStorage, BaseVectorStorage
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass(frozen=True)
 class GraphSearch:

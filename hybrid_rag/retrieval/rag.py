@@ -1,10 +1,4 @@
-"""The retriever: one class owning the read-side storages.
-
-``RetrievalRAG`` opens the PostgreSQL and Neo4j handles for one workspace, answers
-:meth:`aretrieve`, and closes them again. It shares the storage classes with
-``hybrid_rag.ingestion`` but only ever reads — nothing here inserts or deletes.
-"""
-
+"""The retriever: one class owning the read-side storages."""
 from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from typing import Any, Callable, final, Optional
@@ -43,9 +37,6 @@ class RetrievalRAG:
     role: str = field(default="retrieval", init=False)
     """Which PostgreSQL pool and vector flush lock this instance's storages use."""
 
-    # Context budget (read from ``global_config`` by the retrieval stages)
-    # ---
-
     max_entity_tokens: int = field(default=settings.max_entity_tokens)
     """Maximum number of tokens for entity in context."""
 
@@ -63,9 +54,6 @@ class RetrievalRAG:
 
     max_graph_nodes: int = field(default=settings.max_graph_nodes)
     """Maximum number of graph nodes returned by the knowledge-graph endpoints."""
-
-    # Models
-    # ---
 
     tokenizer: Optional[Tokenizer] = field(default=None)
     """Token counter for the context budget; None uses the shared :func:`get_tokenizer`."""
@@ -93,8 +81,6 @@ class RetrievalRAG:
 
     min_rerank_score: float = field(default=settings.min_rerank_score)
     """Minimum rerank score threshold for filtering chunks after reranking."""
-
-    # Storage
 
     vector_db_storage_cls_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional parameters for vector database storage."""
@@ -124,7 +110,6 @@ class RetrievalRAG:
         }
 
         self.tokenizer = self.tokenizer or get_tokenizer()
-
 
         if self.rerank_model_func is not None:
             self.rerank_model_func = limit_async_func_call(

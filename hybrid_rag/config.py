@@ -1,8 +1,12 @@
 from typing import Optional
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 NOVA_MODELS: frozenset[str] = frozenset({"mjai.nova-2-lite-v1:0"})
+
+#: Where a file is parsed (``ingestion/parser/parse.py``): ``builtin`` runs the parsers of this
+#: package in this process; ``external`` sends the file to the parser server.
+PARSER_BACKENDS: tuple[str, ...] = ("builtin", "external")
 
 MODEL_ROLES: dict[str, tuple[str, str]] = {
     "extract": ("extract_llm", "EXTRACT_LLM"),
@@ -87,6 +91,10 @@ class RagSettings(BaseSettings):
     textract_region: Optional[str] = Field(default=None, validation_alias="TEXTRACT_REGION")
     textract_max_concurrent_jobs: int = Field(default=50, validation_alias="TEXTRACT_MAX_CONCURRENT_JOBS")
     textract_mode: str = Field(default="async", validation_alias="TEXTRACT_MODE")  # "async" | "sync"
+    parser_backend: str = Field(default="builtin", validation_alias="PARSER_BACKEND")  # "builtin" | "external"
+    parser_binding_host: Optional[str] = Field(default=None, validation_alias="PARSER_BINDING_HOST")
+    parser_binding_api_key: Optional[str] = Field(default=None, validation_alias="PARSER_BINDING_API_KEY")
+    parser_timeout: float = Field(default=1800.0, validation_alias="PARSER_TIMEOUT")
     unoserver_host: str = Field(default="127.0.0.1", validation_alias="UNOSERVER_HOST")
     unoserver_port: int = Field(default=2003, validation_alias="UNOSERVER_PORT")
     office_convert_timeout: int = Field(default=120, validation_alias="OFFICE_CONVERT_TIMEOUT")
@@ -143,5 +151,21 @@ class RagSettings(BaseSettings):
                     missing.append(f"{env}_{suffix.upper()}")
         if missing:
             raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+
+    def require_parser_binding(self) -> None:
+        """The parser server's address and key, or a clear error before any file is sent to it."""
+        names = {"PARSER_BINDING_HOST": self.parser_binding_host, "PARSER_BINDING_API_KEY": self.parser_binding_api_key}
+        missing = [name for name, value in names.items() if not value]
+        if missing:
+            raise RuntimeError(f"Missing required env vars: {', '.join(missing)} (PARSER_BACKEND=external)")
+
+    @model_validator(mode="after")
+    def _check_parser_backend(self) -> "RagSettings":
+        """Fail at startup, not at the first ingest, when the configured backend cannot work."""
+        if self.parser_backend not in PARSER_BACKENDS:
+            raise ValueError(f"PARSER_BACKEND harus salah satu dari {PARSER_BACKENDS}, bukan {self.parser_backend!r}")
+        if self.parser_backend == "external":
+            self.require_parser_binding()
+        return self
 
 settings = RagSettings()

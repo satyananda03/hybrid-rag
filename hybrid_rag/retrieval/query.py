@@ -9,16 +9,10 @@
 Nothing here generates an answer — retrieval stops at the context string.
 """
 
-
 import re
 from typing import Any
-
 from hybrid_rag.core.base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage
 from hybrid_rag.retrieval.types import QueryParam, QueryResult
-# Every prompt that reaches a model lives in retrieval/keywords/keywords.yaml and is wired
-# into chains by keywords.chain. What is left in TEMPLATES is the two context templates
-# that serialize retrieved entities/relations/chunks — formatting, not
-# instructions.
 from hybrid_rag.retrieval.keywords.chain import keywords_chain
 from hybrid_rag.retrieval.keywords.schema import KeywordsOutput
 from hybrid_rag.core.llm_cache import CACHE_KV, CACHE_MODE, CACHE_QUERYPARAM

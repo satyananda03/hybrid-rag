@@ -1,4 +1,3 @@
-
 """Multimodal analysis — the image / table / equation half of ingestion.
 
 Each image / table / equation is described by a model and turned into exactly
@@ -16,7 +15,6 @@ The processors themselves live next door in this package and are not touched
 by the pipeline — this module only orchestrates them.
 """
 
-
 import asyncio
 import contextlib
 import os
@@ -31,7 +29,6 @@ from hybrid_rag.ingestion.utils import raise_first_failure
 from hybrid_rag.storage.shared import get_storage_keyed_lock
 from hybrid_rag.config import settings
 import logging
-
 from hybrid_rag.ingestion.multimodal.content import (
     format_table_body,
     get_equation_text_and_format,
@@ -45,7 +42,6 @@ logger = logging.getLogger(__name__)
 # Teks tetangga sudah diekstrak lewat text chunk biasa; ekstraksi chunk gambar cukup analisisnya.
 _NEIGHBOR_TEXT = re.compile(r"- Neighbor Text: .*?\n(?=Image Path: )", re.S)
 
-
 class MultimodalAnalysisError(RuntimeError):
     """An image / table / equation could not be described by the model."""
 
@@ -55,14 +51,12 @@ class MultimodalAnalysisError(RuntimeError):
             f"({format_location(item_info['page_idx']) or 'no page'}) could not be analyzed: {cause}"
         )
 
-
 class ImageUnavailableError(RuntimeError):
     """An image item has no readable source — neither a local file nor a URL.
 
     Raised rather than skipped: a document that silently loses its figures
     looks fully ingested while its most information-dense blocks are missing.
     """
-
 
 def resolve_image_sources(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Return ``items`` with every image's ``img_path`` readable by the VLM.
@@ -99,7 +93,6 @@ def resolve_image_sources(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             )
         item["img_path"] = str(item["_original_url"]).strip()
     return resolved
-
 
 class _AnalyzeMixin:
     """Caption the multimodal half of a document and extract its graph."""
